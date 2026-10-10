@@ -120,7 +120,7 @@ module tb_frontend_integration;
     logic swc_valid;
     logic [1:0] swc_cycle;
     logic consume_sig;
-    assign consume_sig = (swc_cycle == 2'd0) && swc_valid;
+    assign consume_sig = (swc_cycle == 2'd0) && swc_valid && !tb_buffer_full;
 
     logic dec_done_detect;
 
@@ -136,6 +136,7 @@ module tb_frontend_integration;
         .push2_done(recon_push2_done_arr),
         .sub_warp_cycle(swc_cycle),
         .sub_warp_valid(swc_valid),
+        .buffer_full(tb_buffer_full),
         .done_detect(dec_done_detect),
         .curr_warp(ws_curr_warp),
         .next_warp(ws_next_warp),
@@ -235,6 +236,7 @@ module tb_frontend_integration;
         .clk(clk),
         .reset(reset),
         .consume(consume_sig),
+        .buffer_full(tb_buffer_full),
         .sub_warp_cycle(swc_cycle),
         .next_warp(ws_next_warp),
         .curr_warp(ws_curr_warp),
@@ -259,6 +261,7 @@ module tb_frontend_integration;
     decode_stage u_decode (
         .clk(clk),
         .reset(reset),
+        .buffer_full(tb_buffer_full),
         .sub_warp_valid(swc_valid),
         .sub_warp_cycle(swc_cycle),
         .curr_warp(ws_curr_warp),
@@ -281,12 +284,13 @@ module tb_frontend_integration;
     // 1 cycle after a non-branch instruction's last sub-group decodes, pulse commit_done
     // push2_done is also testbench-driven (tb_push2_done) rather than real.
     wire is_branch_decode = (dec_opcode_q[5:3] == 3'b011);
+    logic auto_commit_enable = 1'b1;
     always_ff @(posedge clk) begin
         if (reset) begin
             commit_done_auto <= 1'b0;
             commit_warp_auto <= 3'b0;
         end else begin
-            commit_done_auto <= dec_sub_warp_valid_q && (dec_sub_warp_cycle_q == 2'd3) && !is_branch_decode;
+            commit_done_auto <= auto_commit_enable && dec_sub_warp_valid_q && (dec_sub_warp_cycle_q == 2'd3) && !is_branch_decode;
             commit_warp_auto <= dec_dest_addr_q[9:7];
         end
     end
@@ -482,43 +486,149 @@ module tb_frontend_integration;
 
     // Scenario 2: buffer_full mid-span hold
     task scenario2_buffer_full_hold;
-        begin
-            $display("\nScenario 2: buffer_full mid-span hold");
-            do_reset();
-            load_word(32'h0000_2000, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
-            load_word(32'h0000_2004, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
-            load_word(32'h0000_2008, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
-            load_word(32'h0000_200C, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
+    logic [31:0] held_instr, held_pc;
+    logic [9:0] held_src1, held_src2, held_src3;
 
-            launch_kernel(1, 32'h0000_2000);
+    logic [1:0] held_dec_cycle;
+    logic held_dec_valid;
+    logic [9:0] held_dec_dest;
+    logic [7:0] held_dec_alu_valid;
 
-            seen_cycle1 = 0;
-            for (c = 0; c < 20 && !seen_cycle1; c = c + 1) begin
-                tick(1);
-                if (swc_valid && swc_cycle == 2'd1) seen_cycle1 = 1;
-            end
-            check(seen_cycle1 == 1, "scenario2: reached sub_warp_cycle==1 before asserting buffer_full");
+    logic [31:0] held_buf_instr, held_buf_pc;
+    logic [31:0] target_pc;
 
-            tb_buffer_full = 1'b1;
-            held_cycles = 0;
-            cyc_before_hold = swc_cycle;
-            for (c = 0; c < 4; c = c + 1) begin
-                tick(1);
-                if (!swc_valid) held_cycles = held_cycles + 1;
-                check(swc_cycle == cyc_before_hold, "scenario2: sub_warp_cycle pinned during buffer_full hold");
-            end
-            check(held_cycles >= 1, "scenario2: sub_warp_valid deasserted during at least one held cycle");
+    int expected_cycle;
+    int observed_count;
+    bit sequence_error;
 
-            tb_buffer_full = 1'b0;
+    begin
+        $display("\nScenario 2: buffer_full mid-instruction stall");
+
+        do_reset();
+
+        target_pc = 32'h0000_2000;
+
+        load_word(32'h0000_2000, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
+        load_word(32'h0000_2004, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
+        load_word(32'h0000_2008, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
+        load_word(32'h0000_200C, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
+
+        launch_kernel(1, target_pc);
+
+        // Wait until sub-warp 0 of the first instruction reaches decode.
+        seen_cycle1 = 0;
+
+        for (c = 0; c < 30 && !seen_cycle1; c++) begin
             tick(1);
-            check(swc_cycle == (cyc_before_hold + 2'd1),
-                  "scenario2: resumed counting from exactly the pinned cycle after buffer_full clears");
+
+            if (dec_sub_warp_valid_q &&
+                dec_instr_pc_q == target_pc &&
+                dec_sub_warp_cycle_q == 2'd0)
+                seen_cycle1 = 1;
         end
-    endtask
+
+        check(seen_cycle1,
+              "scenario2: sub-warp 0 reached decode before stall");
+
+        // Assert stall between clock edges.
+        @(negedge clk);
+        tb_buffer_full = 1'b1;
+
+        // Snapshot all pipeline outputs.
+        held_instr = il_instr_q;
+        held_pc = il_instr_pc_q;
+
+        held_src1 = il_src1_addr;
+        held_src2 = il_src2_addr;
+        held_src3 = il_src3_addr;
+
+        held_dec_cycle = dec_sub_warp_cycle_q;
+        held_dec_valid = dec_sub_warp_valid_q;
+        held_dec_dest = dec_dest_addr_q;
+        held_dec_alu_valid = dec_alu_valid_q;
+
+        held_buf_instr = fs_instr;
+        held_buf_pc = fs_instr_pc;
+
+        cyc_before_hold = swc_cycle;
+
+        // Hold stall for four clock cycles.
+        for (c = 0; c < 4; c++) begin
+            tick(1);
+
+            check(swc_cycle == cyc_before_hold,
+                  "scenario2: sub-warp counter frozen");
+
+            check(il_instr_q == held_instr &&
+                  il_instr_pc_q == held_pc,
+                  "scenario2: instruction and PC frozen");
+
+            check(il_src1_addr == held_src1 &&
+                  il_src2_addr == held_src2 &&
+                  il_src3_addr == held_src3,
+                  "scenario2: source addresses frozen");
+
+            check(dec_sub_warp_cycle_q == held_dec_cycle &&
+                  dec_sub_warp_valid_q == held_dec_valid &&
+                  dec_dest_addr_q == held_dec_dest &&
+                  dec_alu_valid_q == held_dec_alu_valid,
+                  "scenario2: decode registers frozen");
+
+            check(fs_instr == held_buf_instr &&
+                  fs_instr_pc == held_buf_pc,
+                  "scenario2: prefetch buffer head unchanged");
+
+            check(!consume_sig,
+                  "scenario2: no instruction consumed during stall");
+
+            check(!swc_valid,
+                  "scenario2: sub_warp_valid deasserted during stall");
+        end
+
+        // Release stall between clock edges.
+        @(negedge clk);
+        tb_buffer_full = 1'b0;
+
+        // Sub-warp 0 was decoded before the stall.
+        // Expect sub-warps 1, 2, and 3 in order after recovery.
+        expected_cycle = 1;
+        observed_count = 0;
+        sequence_error = 0;
+
+        for (c = 0; c < 30 && observed_count < 3; c++) begin
+            tick(1);
+
+            if (dec_sub_warp_valid_q &&
+                dec_instr_pc_q == target_pc) begin
+
+                if (dec_sub_warp_cycle_q != expected_cycle[1:0]) begin
+                    sequence_error = 1;
+
+                    check(1'b0,
+                          $sformatf(
+                              "scenario2: expected sub-warp %0d, got %0d",
+                              expected_cycle,
+                              dec_sub_warp_cycle_q
+                          ));
+                end
+
+                observed_count++;
+                expected_cycle++;
+            end
+        end
+
+        check(observed_count == 3,
+              "scenario2: three sub-warps observed after stall");
+
+        check(!sequence_error,
+              "scenario2: sub-warps 1, 2, 3 decoded in order");
+    end
+endtask
 
     // Scenario 3: two-warp back-to-back spans (natural GTO cycling)
     task scenario3_two_warp_alternation;
         begin
+            auto_commit_enable = 1'b0;
             $display("\n--- Scenario 3: two-warp back-to-back spans ---");
             do_reset();
             load_word(32'h0000_3000, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
@@ -548,6 +658,7 @@ module tb_frontend_integration;
             end
             check(seen_warp0, "scenario3: warp0 was decoded at least once");
             check(seen_warp1, "scenario3: warp1 was decoded at least once (GTO switched away from warp0 without a commit)");
+            auto_commit_enable = 1'b1;
         end
     endtask
 
@@ -663,34 +774,158 @@ module tb_frontend_integration;
         end
     endtask
 
-    // Scenario 8: buffer_full asserted for the first time before sub_warp_valid is high for fetch_valid
     task scenario8_buffer_full;
+        logic [31:0] expected_instr;
+        logic [31:0] expected_pc;
+        logic [31:0] held_instr, held_pc;
+        logic [9:0] held_src1, held_src2, held_src3;
+        logic [1:0] held_dec_cycle;
+        logic held_dec_valid;
+        logic [9:0] held_dec_dest;
+        logic [7:0] held_dec_alu_valid;
+        logic [1:0] held_swc_cycle;
+        bit saw_first_consume;
+        bit saw_first_decode;
+        bit sequence_error;
+        int decode_count[4];
+        int observed_count;
+        int expected_cycle;
+
         begin
-            $display("\nScenario 8: buffer_full asserted before sub_warp_valid ever pulses (no grace cycle)");
+            $display("\nScenario 8: stall before first instruction is available");
+
             do_reset();
-            load_word(32'h0000_7100, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
-            load_word(32'h0000_7104, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
-            load_word(32'h0000_7108, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
-            load_word(32'h0000_710C, r_type(OP_ADD, 5'd2, 5'd3, 5'd1));
 
-            tb_buffer_full = 1'b1; // asserted BEFORE launch
-            launch_kernel(1, 32'h0000_7100);
+            expected_pc = 32'h0000_8000;
+            expected_instr = r_type(OP_ADD, 5'd2, 5'd3, 5'd1);
 
-            // buffer fills (fetch_valid goes high) while buffer_full stays high
-            // sub_warp_valid must never pulse high,
-            saw_spurious_valid = 1'b0;
-            for (c = 0; c < 30; c = c + 1) begin
+            load_word(expected_pc, expected_instr);
+
+            // Stall the pipeline before launching the kernel.
+            @(negedge clk);
+            tb_buffer_full = 1'b1;
+
+            launch_kernel(1, expected_pc);
+
+            held_instr = il_instr_q;
+            held_pc = il_instr_pc_q;
+            held_src1 = il_src1_addr;
+            held_src2 = il_src2_addr;
+            held_src3 = il_src3_addr;
+
+            held_dec_cycle = dec_sub_warp_cycle_q;
+            held_dec_valid = dec_sub_warp_valid_q;
+            held_dec_dest = dec_dest_addr_q;
+            held_dec_alu_valid = dec_alu_valid_q;
+
+            held_swc_cycle = swc_cycle;
+
+            // Allow the prefetch buffer to fill while the pipeline is stalled.
+            for (c = 0; c < 30; c++) begin
                 tick(1);
-                if (swc_valid) saw_spurious_valid = 1'b1;
-                check(swc_cycle == 2'd3, "scenario8: sub_warp_cycle stays pinned at reset value while buffer_full held from before launch");
-            end
-            check(!saw_spurious_valid, "scenario8: sub_warp_valid never pulsed while buffer_full was already high (no grace cycle)");
-            check(fs_fetch_valid == 1'b1, "scenario8: fetch actually completed and buffer is populated (buffer_full is the only thing holding the counter)");
 
+                check(swc_cycle == held_swc_cycle,
+                    "scenario8: counter stays at reset value during stall");
+
+                check(il_instr_q == held_instr &&
+                    il_instr_pc_q == held_pc,
+                    "scenario8: instruction latch does not capture instruction");
+
+                check(il_src1_addr == held_src1 &&
+                    il_src2_addr == held_src2 &&
+                    il_src3_addr == held_src3,
+                    "scenario8: source addresses remain frozen");
+
+                check(dec_sub_warp_cycle_q == held_dec_cycle &&
+                    dec_sub_warp_valid_q == held_dec_valid &&
+                    dec_dest_addr_q == held_dec_dest &&
+                    dec_alu_valid_q == held_dec_alu_valid,
+                    "scenario8: decode registers remain frozen");
+            end
+
+            check(!swc_valid,
+                "scenario8: sub_warp_valid never asserted during stall");
+
+            check(!consume_sig,
+                "scenario8: no instruction consumed during stall");
+
+            check(fs_fetch_valid,
+                "scenario8: prefetch buffer filled despite buffer_full");
+
+            check(fs_instr == expected_instr &&
+                fs_instr_pc == expected_pc,
+                "scenario8: prefetch buffer contains correct instruction and PC");
+
+            // Release the stall.
+            @(negedge clk);
             tb_buffer_full = 1'b0;
-            tick(1);
-            check(swc_valid == 1'b1, "scenario8: sub_warp_valid asserts the cycle after buffer_full clears");
-            check(swc_cycle == 2'd0, "scenario8: sub_warp_cycle begins counting from 0 once released");
+
+            saw_first_consume = 1'b0;
+            saw_first_decode = 1'b0;
+            sequence_error = 1'b0;
+            observed_count = 0;
+            expected_cycle = 0;
+
+            for (int i = 0; i < 4; i++)
+                decode_count[i] = 0;
+
+            // Stop after the first four valid decode events.
+            // This avoids counting subsequent refetches of the same PC.
+            for (c = 0; c < 30 && observed_count < 4; c++) begin
+                @(negedge clk);
+
+                if (consume_sig && !saw_first_consume) begin
+                    saw_first_consume = 1'b1;
+
+                    check(fs_instr == expected_instr &&
+                        fs_instr_pc == expected_pc,
+                        "scenario8: first consumed instruction is correct");
+                end
+
+                tick(1);
+
+                if (dec_sub_warp_valid_q &&
+                    dec_instr_pc_q == expected_pc) begin
+
+                    if (dec_sub_warp_cycle_q != expected_cycle[1:0]) begin
+                        sequence_error = 1'b1;
+
+                        check(1'b0,
+                            $sformatf(
+                                "scenario8: expected sub-warp %0d, got %0d",
+                                expected_cycle,
+                                dec_sub_warp_cycle_q
+                            ));
+                    end
+
+                    decode_count[dec_sub_warp_cycle_q]++;
+                    observed_count++;
+                    expected_cycle++;
+
+                    if (dec_sub_warp_cycle_q == 2'd0)
+                        saw_first_decode = 1'b1;
+                end
+            end
+
+            check(saw_first_consume,
+                "scenario8: first instruction consumed after stall release");
+
+            check(saw_first_decode,
+                "scenario8: first sub-warp reached decode after stall release");
+
+            check(observed_count == 4,
+                "scenario8: four sub-warps reached decode");
+
+            check(!sequence_error,
+                "scenario8: sub-warps 0, 1, 2, 3 decoded in order");
+
+            for (int i = 0; i < 4; i++) begin
+                check(decode_count[i] == 1,
+                    $sformatf(
+                        "scenario8: sub-warp %0d decoded exactly once (got %0d)",
+                        i, decode_count[i]
+                    ));
+            end
         end
     endtask
 
