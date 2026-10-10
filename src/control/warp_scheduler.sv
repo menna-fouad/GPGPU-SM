@@ -5,7 +5,7 @@ module warp_scheduler #(
     input logic reset,
 
     input logic kernel_start,
-    input logic [2:0] num_warps,
+    input logic [3:0] num_warps,
 
     input logic commit_done,
     input logic [2:0] commit_warp_id,
