@@ -26,8 +26,7 @@ module mask_split_unit #(
     output logic [31:0] push2_recon_pc, // branch_pc + push2_pc_recon_offset
 
     // Per-warp valid bit, one-hot for currently executing warp
-    output logic [NUM_WARPS-1:0] recon_push2_valid,
-    output logic [NUM_WARPS-1:0] recon_current_pc_valid
+    output logic [NUM_WARPS-1:0] recon_push2_valid
 );
     logic accum_done;
     assign accum_done = (&sub_warp_cycle && sub_warp_valid);
@@ -78,12 +77,9 @@ module mask_split_unit #(
     end
 
     always_ff @(posedge clk) begin
-        if (reset) begin
+        if (reset)
             recon_push2_valid <= 1'b0;
-            recon_current_pc_valid <= 1'b0; 
-        end else begin
+        else
             recon_push2_valid <= exec_warp_id & {NUM_WARPS{accum_done && is_branch && !reset && !buffer_full}};
-            recon_current_pc_valid <= exec_warp_id & {NUM_WARPS{accum_done && !is_branch && !buffer_full}}; 
-        end
     end
 endmodule

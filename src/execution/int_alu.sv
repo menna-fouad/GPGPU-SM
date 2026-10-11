@@ -72,11 +72,11 @@ module int_alu (
                 I_TYPE : case (opcode[2:0])
                     LUI  : result <= {src1[15:0], 16'b0};
                     LOAD, STORE,
-                    ADDI : result <= src1 + src2;
-                    SUBI : result <= src1 - src2;
-                    ANDI : result <= src1 & src2;
-                    ORI  : result <= src1 | src2;
-                    SLTI : result <= $signed(src1) < $signed(src2);
+                    ADDI : result <= src1 + offset;
+                    SUBI : result <= src1 - offset;
+                    ANDI : result <= src1 & offset;
+                    ORI  : result <= src1 | offset;
+                    SLTI : result <= $signed(src1) < $signed(offset);
                     default : result <= 32'b0;
                 endcase
 

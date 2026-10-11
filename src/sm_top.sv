@@ -82,9 +82,8 @@ module sm_top (
     logic [31:0] ms_push2_recon_pc;
 
     // Current PC signals (to be connected later)
-    logic [7:0] ms_curr_pc_valid;
-    logic [31:0] curr_pc_update;
-    assign curr_pc_update = ms_push2_pc_fallthrough;
+    logic seq_pc_valid;
+    logic [31:0] seq_next_pc;
 
     genvar gi;
     generate
@@ -102,8 +101,8 @@ module sm_top (
                 .push2_pc_taken(ms_push2_pc_taken),
                 .push2_pc_fallthrough(ms_push2_pc_fallthrough),
                 .push2_recon_pc(ms_push2_recon_pc),
-                .current_pc_valid(ms_curr_pc_valid[gi]),
-                .current_pc(curr_pc_update),
+                .current_pc_valid(seq_pc_valid && (ws_next_warp == gi)),
+                .current_pc(seq_next_pc),
                 .top_mask(recon_top_mask_arr[gi]),
                 .top_pc(recon_top_pc_arr[gi]),
                 .top_recon_pc(recon_top_recon_pc_arr[gi]),
@@ -139,7 +138,9 @@ module sm_top (
         .icache_addr(icache_req_addr),
         .fetch_valid(fetch_valid),
         .instr(fs_instr),
-        .instr_pc(fs_instr_pc)
+        .instr_pc(fs_instr_pc),
+        .seq_next_pc(seq_next_pc),
+        .seq_pc_valid(seq_pc_valid)
     );
 
     logic [31:0] il_instr, il_instr_pc;
@@ -293,8 +294,7 @@ module sm_top (
         .push2_pc_taken(ms_push2_pc_taken),
         .push2_pc_fallthrough(ms_push2_pc_fallthrough),
         .push2_recon_pc(ms_push2_recon_pc),
-        .recon_push2_valid(ms_push2_valid),
-        .recon_current_pc_valid(ms_curr_pc_valid)
+        .recon_push2_valid(ms_push2_valid)
     );
 
     logic [7:0] fma_valid_out;

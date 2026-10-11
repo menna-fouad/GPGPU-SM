@@ -19,7 +19,9 @@ module fetch_stage (
 
     output logic fetch_valid,
     output logic [31:0] instr,
-    output logic [31:0] instr_pc
+    output logic [31:0] instr_pc,
+    output logic seq_pc_valid,
+    output logic [31:0] seq_next_pc
 );
     logic [127:0] fill_pcs;
     logic fill_valid, req_outstanding;
@@ -74,4 +76,6 @@ module fetch_stage (
     );
 
     assign fetch_valid = buf_valid && issue_valid;
+    assign seq_pc_valid = consume && fetch_valid;
+    assign seq_next_pc = instr_pc + 32'd4;
 endmodule

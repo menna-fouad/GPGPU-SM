@@ -76,10 +76,16 @@ module warp_scheduler #(
             curr_warp <= '0;
             next_warp <= '0;
             issue_valid <= (num_warps != 0);
+        end else if (done_detect) begin
+            issue_valid <= 1'b0;
         end else if (decision) begin
             curr_warp <= next_warp;      // adopt last span's staged pick
             next_warp <= next_warp_d;    // stage the following span's pick
             issue_valid <= next_valid_d;
+        end else if (!issue_valid && next_valid_d) begin
+            curr_warp <= next_warp_d;
+            next_warp <= next_warp_d;
+            issue_valid <= 1'b1;
         end
     end
 

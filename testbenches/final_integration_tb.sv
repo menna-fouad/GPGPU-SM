@@ -109,6 +109,67 @@ module final_integration_tb;
         $fatal(1, "Kernel timeout after %0d cycles", max_cycles);
     endtask
 
+    // R-type
+    localparam logic [5:0] NOP = 6'b000000, ADD = 6'b000001, SUB = 6'b000010,
+                           AND = 6'b000011, OR  = 6'b000100, SLT = 6'b000101,
+                           MUL = 6'b000110;
+
+        // I-type
+    localparam logic [5:0] LUI  = 6'b001000, ADDI  = 6'b001001, SUBI  = 6'b001010,
+                           ANDI = 6'b001011, ORI   = 6'b001100, SLTI  = 6'b001101,
+                           LOAD = 6'b001110, STORE = 6'b001111;
+
+    // FMA
+    localparam logic [5:0] FMA = 6'b010000;
+
+    // Branch
+    localparam logic [5:0] BEQ = 6'b011000, BNE = 6'b011001, BLT = 6'b011010, BGE = 6'b011011;
+
+    // Special reg instructions
+    localparam logic [5:0] MOV_TID = 6'b100001, MOV_WID = 6'b100010, MOV_BID = 6'b100100;
+
+    // R-type: opcode | src1 | src2 | dst | unused
+    function automatic logic [31:0] encode_r(
+        input logic [5:0] opcode,
+        input logic [4:0] src1, src2, dst
+    );
+        return {opcode, src1, src2, dst, 11'b0};
+    endfunction
+
+    // I-type: opcode | src1 | dst/src2 | immediate
+    function automatic logic [31:0] encode_i(
+        input logic [5:0] opcode,
+        input logic [4:0] src1, dst,
+        input logic [15:0] imm
+    );
+        return {opcode, src1, dst, imm};
+    endfunction
+
+    // FMA: opcode | src1 | src2 | src3 | dst | unused
+    function automatic logic [31:0] encode_fma(
+        input logic [4:0] src1, src2, src3, dst
+    );
+        return {FMA, src1, src2, src3, dst, 6'b0};
+    endfunction
+
+    // Branch: opcode | src1 | src2 | target_offset | reconv_offset
+    function automatic logic [31:0] encode_branch(
+        input logic [5:0] opcode,
+        input logic [4:0] src1, src2,
+        input logic [9:0] target_offset,
+        input logic [5:0] reconv_offset
+    );
+        return {opcode, src1, src2, target_offset, reconv_offset};
+    endfunction
+
+    // Special: opcode | dst | unused
+    function automatic logic [31:0] encode_special(
+        input logic [5:0] opcode,
+        input logic [4:0] dst
+    );
+        return {opcode, dst, 21'b0};
+    endfunction
+
     task automatic load_instruction(
         input logic [31:0] byte_addr,
         input logic [31:0] instr
@@ -122,6 +183,53 @@ module final_integration_tb;
         data[32 * byte_addr[3:2] +: 32] = instr;
 
         mig_mem[beat] = data;
+    endtask
+
+    generate
+        for (genvar lane = 0; lane < 8; lane++) begin : init_rf
+            task automatic initialize();
+                for (int addr = 0; addr < 1024; addr++) begin
+                    u_sm_top.gen_reg_bank[lane].u_reg_file.bram1[addr] = 32'b0;
+                    u_sm_top.gen_reg_bank[lane].u_reg_file.bram2[addr] = 32'b0;
+                    u_sm_top.gen_reg_bank[lane].u_reg_file.bram3[addr] = 32'b0;
+                end
+            endtask
+        end
+    endgenerate
+
+    generate
+        for (genvar lane = 0; lane < 8; lane++) begin : check_rf
+            task automatic check_register(
+                input logic [2:0] warp,
+                input logic [1:0] sw,
+                input logic [4:0] reg_num,
+                input logic [31:0] expected
+            );
+                logic [9:0] addr;
+                addr = {warp, sw, reg_num};
+
+                assert (u_sm_top.gen_reg_bank[lane].u_reg_file.bram1[addr] === expected)
+                    else $fatal(1, "Lane %0d, warp %0d, subwarp %0d, R%0d: expected %0d, got %0d",
+                                    lane, warp, sw, reg_num, expected,
+                                    u_sm_top.gen_reg_bank[lane].u_reg_file.bram1[addr]);
+            endtask
+        end
+    endgenerate
+
+    task automatic check_all_lanes(
+        input logic [2:0] warp,
+        input logic [1:0] sw,
+        input logic [4:0] reg_num,
+        input logic [31:0] expected
+    );
+        check_rf[0].check_register(warp, sw, reg_num, expected);
+        check_rf[1].check_register(warp, sw, reg_num, expected);
+        check_rf[2].check_register(warp, sw, reg_num, expected);
+        check_rf[3].check_register(warp, sw, reg_num, expected);
+        check_rf[4].check_register(warp, sw, reg_num, expected);
+        check_rf[5].check_register(warp, sw, reg_num, expected);
+        check_rf[6].check_register(warp, sw, reg_num, expected);
+        check_rf[7].check_register(warp, sw, reg_num, expected);
     endtask
 
     initial begin
@@ -147,6 +255,48 @@ module final_integration_tb;
         wait_for_kernel_done(500);
 
         $display("TEST 1 PASSED");
+
+        $display("TEST 2: Single-warp arithmetic instructions and register writeback");
+
+        /*
+        ADDI R1, R0, 10     // R1 = 10
+        ADDI R2, R0, 20     // R2 = 20
+        ADD  R3, R1, R2     // R3 = 30
+        SUB  R4, R3, R1     // R4 = 20
+        MUL  R5, R4, R2     // R5 = 400
+        DONE
+        */
+
+        reset();
+        mig_mem.delete();
+        load_instruction('h00, encode_i(ADDI, 0, 1, 10));
+        load_instruction('h04, encode_i(ADDI, 0, 2, 20));
+        load_instruction('h08, encode_r(ADD, 1, 2, 3));
+        load_instruction('h0C, encode_r(SUB, 3, 1, 4));
+        load_instruction('h10, encode_r(MUL, 4, 2, 5));
+        load_instruction('h14, DONE_INSTR);
+
+        init_rf[0].initialize();
+        init_rf[1].initialize();
+        init_rf[2].initialize();
+        init_rf[3].initialize();
+        init_rf[4].initialize();
+        init_rf[5].initialize();
+        init_rf[6].initialize();
+        init_rf[7].initialize();
+
+        launch_kernel(4'd1);
+        wait_for_kernel_done(50000);
+
+        for (int sw = 0; sw < 4; sw++) begin
+            check_all_lanes(3'd0, 2'(sw), 5'd1, 32'd10);
+            check_all_lanes(3'd0, 2'(sw), 5'd2, 32'd20);
+            check_all_lanes(3'd0, 2'(sw), 5'd3, 32'd30);
+            check_all_lanes(3'd0, 2'(sw), 5'd4, 32'd20);
+            check_all_lanes(3'd0, 2'(sw), 5'd5, 32'd400);
+        end
+
+        $display("TEST 2 PASSED");
 
         $finish;
     end
