@@ -11,6 +11,7 @@ module fetch_stage (
                          // (sub_warp_cycle == 2'd0) && sub_warp_valid
     
     input logic icache_ready,
+    input logic icache_rsp_valid,
     input logic [127:0] icache_data,
     
     output logic icache_req_valid,
@@ -29,7 +30,8 @@ module fetch_stage (
 
     always_ff @(posedge clk) begin
         if (reset) req_outstanding <= 1'b0;
-        else req_outstanding <= request_active && !icache_ready;
+        else if (icache_req_valid && icache_ready) req_outstanding <= 1'b1;
+        else if (icache_rsp_valid) req_outstanding <= 1'b0;
     end
 
     always_comb begin
@@ -47,7 +49,7 @@ module fetch_stage (
             fill_valid = 1'b0;
             fill_pcs = 128'b0;
         end else begin
-            fill_valid = icache_ready & request_active;
+            fill_valid = icache_rsp_valid;
             for (int i = 0; i < 4; ++i)  begin
                 // top_pc + 4 * i (top_pc, top_pc + 4, top_pc + 8, top_pc + 12)
                 fill_pcs[i*32 +: 32] = top_pc + (i << 2);

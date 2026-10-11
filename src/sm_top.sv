@@ -1,12 +1,16 @@
 module sm_top(
-    input logic clk,
-    input logic reset,
+    input logic sm_clk,
+    input logic sm_reset,
+
+    input logic mem_ui_clk,
+    input logic mem_ui_reset,
 
     input logic kernel_start,
     input logic [3:0] num_warps,
     output logic kernel_done,
 
     // MIG interface
+    input logic init_calib_complete,
     output logic app_en,
     output logic [2:0] app_cmd,
     output logic [26:0] app_addr,
@@ -27,8 +31,8 @@ module sm_top(
     logic [1:0] sub_warp_cycle;
 
     sub_warp_counter u_sub_warp_counter (
-        .clk(clk),
-        .reset(reset),
+        .clk(sm_clk),
+        .reset(sm_reset),
         .fetch_valid(fetch_valid), // from fetch_stage
         .buffer_full(wb_buffer_full), // from writeback_arbiter
         .sub_warp_cycle(sub_warp_cycle),
@@ -41,21 +45,25 @@ module sm_top(
 
     logic [2:0] ws_curr_warp, ws_next_warp;
     logic ws_issue_valid;
+    logic warps_done;
 
     warp_scheduler u_warp_sheduler (
-        .clk(clk),
-        .reset(reset),
+        .clk(sm_clk),
+        .reset(sm_reset),
         .kernel_start(kernel_start),
         .num_warps(num_warps),
         .commit_done(commit_done), // from commit_tracker
+        .store_done(store_done), // from load_store_unit
         .push2_done(recon_push2_done_arr), // from recon_pc
         .sub_warp_cycle(sub_warp_cycle), // from u_sub_warp_counter
         .sub_warp_valid(sub_warp_valid), // from u_sub_warp_counter
         .buffer_full(wb_buffer_full), // from writeback_arbiter
         .done_detect(dec_done_detect), // from decode
+        .flush_done(flush_done), // from data cache
         .curr_warp(ws_curr_warp),
         .next_warp(ws_next_warp),
         .issue_valid(ws_issue_valid),
+        .warps_done(warps_done),
         .kernel_done(kernel_done)
     );
 
@@ -82,8 +90,8 @@ module sm_top(
     generate
         for (gi = 0; gi < 8; ++gi) begin : g_recon
             recon_stack #(.DEPTH(8)) u_recon (
-                .clk(clk),
-                .reset(reset),
+                .clk(sm_clk),
+                .reset(sm_reset),
                 .init_push(kernel_start && (gi < num_warps)),
                 .init_mask(32'hFFFF_FFFF),
                 .init_pc(32'b0),
@@ -109,25 +117,26 @@ module sm_top(
     logic [31:0] fs_instr, fs_instr_pc;
     logic consume;
 
-    logic ic_ready, ic_req_valid;
-    logic [31:0] ic_addr;
-    logic [127:0] ic_data;
+    logic icache_req_ready, icache_req_valid, icache_rsp_valid;
+    logic [31:0] icache_req_addr;
+    logic [127:0] icache_data;
 
     assign consume = ws_issue_valid && ~|sub_warp_cycle && sub_warp_valid && !wb_buffer_full;
 
     fetch_stage u_fetch (
-        .clk(clk),
-        .reset(reset),
+        .clk(sm_clk),
+        .reset(sm_reset),
         .kernel_launch(kernel_start),
         .issue_valid(ws_issue_valid),
         .next_warp(ws_next_warp),
         .top_pc(recon_top_pc_arr[ws_next_warp]),
         .recon_pc(recon_top_recon_pc_arr[ws_next_warp]),
         .consume(consume),
-        .icache_ready(ic_ready),
-        .icache_data(ic_data),
-        .icache_req_valid(ic_req_valid),
-        .icache_addr(ic_addr),
+        .icache_ready(icache_req_ready),
+        .icache_rsp_valid(icache_rsp_valid),
+        .icache_data(icache_data),
+        .icache_req_valid(icache_req_valid),
+        .icache_addr(icache_req_addr),
         .fetch_valid(fetch_valid),
         .instr(fs_instr),
         .instr_pc(fs_instr_pc)
@@ -137,8 +146,8 @@ module sm_top(
     logic [9:0] il_src1_addr, il_src2_addr, il_src3_addr;
 
     instruction_latch u_instruction_latch (
-        .clk(clk),
-        .reset(reset),
+        .clk(sm_clk),
+        .reset(sm_reset),
         .consume(consume),
         .buffer_full(wb_buffer_full),
         .sub_warp_cycle(sub_warp_cycle),
@@ -162,8 +171,8 @@ module sm_top(
     logic [31:0] dec_instr_pc;
 
     decode_stage u_decode (
-        .clk(clk),
-        .reset(reset),
+        .clk(sm_clk),
+        .reset(sm_reset),
         .buffer_full(wb_buffer_full),
         .sub_warp_valid(sub_warp_valid),
         .sub_warp_cycle(sub_warp_cycle),
@@ -191,8 +200,8 @@ module sm_top(
     generate
         for (gi = 0; gi < 8; ++gi) begin : gen_reg_bank
             reg_file u_reg_file (
-                .clk(clk),
-                .reset(reset),
+                .clk(sm_clk),
+                .reset(sm_reset),
 
                 // source addresses from instruction latch
                 .src1_addr(il_src1_addr),
@@ -225,8 +234,8 @@ module sm_top(
     generate
         for (gi = 0; gi < 8; ++gi) begin : gen_int_alu
             int_alu u_int_alu (
-                .clk(clk),
-                .reset(reset),
+                .clk(sm_clk),
+                .reset(sm_reset),
                 .valid_in(dec_alu_valid[gi]),
                 .buffer_full(wb_buffer_full),
                 .sub_warp_valid_in(dec_sub_warp_valid),
@@ -267,8 +276,8 @@ module sm_top(
     wire [5:0] alu_push2_pc_recon_offset = alu_recon_offset_arr[0];
 
     mask_split_unit u_mask_split (
-        .clk(clk),
-        .reset(reset),
+        .clk(sm_clk),
+        .reset(sm_reset),
         .buffer_full(wb_buffer_full),
         .sub_warp_cycle(alu_sub_warp_cycle),
         .sub_warp_valid(alu_sub_warp_valid),
@@ -295,8 +304,8 @@ module sm_top(
     generate
         for (gi = 0; gi < 8; ++gi) begin : gen_fma
             fp32_fma u_fma (
-                .clk(clk),
-                .reset(reset),
+                .clk(sm_clk),
+                .reset(sm_reset),
                 .valid_in(dec_fma_valid[gi]),
                 .buffer_full(wb_buffer_full),
                 .src1(reg_src1_data[gi]),
@@ -342,8 +351,8 @@ module sm_top(
     generate
         for (gi = 0; gi < 8; ++gi) begin
             writeback_arbiter u_writeback_arbiter (
-                .clk(clk),
-                .reset(reset),
+                .clk(sm_clk),
+                .reset(sm_reset),
 
                 .alu_data(alu_result[gi]),
                 .fma_data(fma_result[gi]),
@@ -376,8 +385,8 @@ module sm_top(
     assign wb_buffer_full = |wb_buffer_full_arr;
 
     commit_tracker u_commit_tracker (
-        .clk(clk),
-        .reset(reset),
+        .clk(sm_clk),
+        .reset(sm_reset),
         .recon_top_mask_arr(recon_top_mask_arr),
         .rf_write_enable(wb_rf_write_enable),
         .rf_write_addr(wb_rf_write_addr_arr),
@@ -385,4 +394,263 @@ module sm_top(
     );
 
     
+    logic dcache_req_valid, dcache_req_ready;
+    logic dcache_req_write; 
+    logic [31:0] dcache_req_addr, dcache_wr_word_en;
+    logic [1023:0] dcache_wr_data;
+
+    logic txn_valid, txn_is_load, txn_last;
+    logic [2:0] txn_warp;
+    logic [4:0] txn_dst;
+    logic [31:0] txn_match_mask;
+    logic [31:0][4:0] txn_word_sel;
+
+    memory_coalescing_unit coalescing (
+        .clk(sm_clk),
+        .reset(sm_reset),
+        // input from ALU
+        .addr(alu_result),
+        .src2(alu_src2_out), // store data
+        .valid(alu_valid_out),
+        .is_load(alu_is_load),
+        .is_store(alu_is_store),
+        .sub_warp_valid(alu_sub_warp_valid),
+        .sub_warp_cycle(alu_sub_warp_cycle),
+        .reg_bank_addr(alu_reg_bank_addr),
+        // interface to data cache
+        .req_valid(dcache_req_valid),
+        .req_ready(dcache_req_ready),
+        .req_addr(dcache_req_addr),
+        .req_write(dcache_req_write),
+        .wr_data(dcache_wr_data),
+        .wr_word_en(dcache_wr_word_en),
+        // output to load store unit
+        .txn_valid(txn_valid),
+        .txn_is_load(txn_is_load),
+        .txn_last(txn_last),
+        .txn_warp(txn_warp),
+        .txn_dst(txn_dst),
+        .txn_match_mask(txn_match_mask),
+        .txn_word_sel(txn_word_sel)
+    );
+
+    logic icache_mem_req_valid, icache_mem_req_ready;
+    logic [31:0] icache_mem_req_addr;
+    logic [127:0] icache_mem_rdata;
+    logic icache_mem_rvalid, icache_mem_rlast;
+
+    l1_icache icache (
+        .clk(sm_clk),
+        .reset(sm_reset),
+        .req_valid(icache_req_valid),
+        .req_ready(icache_req_ready),
+        .req_addr(icache_req_addr),
+        .req_id(1'b0),
+        .rsp_valid(icache_rsp_valid),
+        .instrs(icache_data),
+        .rsp_id(),
+        .mem_req_valid(icache_mem_req_valid),
+        .mem_req_ready(icache_mem_req_ready),
+        .mem_req_addr(icache_mem_req_addr),
+        .mem_rdata(icache_mem_rdata),
+        .mem_rvalid(icache_mem_rvalid),
+        .mem_rlast(icache_mem_rlast)
+    );
+
+    logic dcache_rsp_valid;
+    logic [1023:0] dcache_rsp_line;
+    logic dcache_mem_req_valid, dcache_mem_req_ready, dcache_mem_req_write;
+    logic [31:0] dcache_mem_req_addr;
+    logic dcache_mem_wvalid, dcache_mem_wready, dcache_mem_wlast;
+    logic [127:0] dcache_mem_wdata;
+    logic [127:0] dcache_mem_rdata;
+    logic dcache_mem_rvalid, dcache_mem_rlast;
+    logic flush_done; // sent to warp scheduler to mark kernel_done
+
+    l1_cache dcache (
+        .clk(sm_clk),
+        .reset(sm_reset),
+        .req_valid(dcache_req_valid),
+        .req_ready(dcache_req_ready),
+        .req_addr(dcache_req_addr),
+        .req_id(1'b0),
+        .req_write(dcache_req_write),
+        .wr_data(dcache_wr_data),
+        .wr_word_en(dcache_wr_word_en),
+        .rsp_valid(dcache_rsp_valid),
+        .rsp_line(dcache_rsp_line),
+        .rsp_id(),
+        .flush_start(warps_done && !kernel_done), // from warp_scheduler
+        .flush_done(flush_done),
+        .mem_req_valid(dcache_mem_req_valid),
+        .mem_req_ready(dcache_mem_req_ready),
+        .mem_req_write(dcache_mem_req_write),
+        .mem_req_addr(dcache_mem_req_addr),
+        .mem_wvalid(dcache_mem_wvalid),
+        .mem_wready(dcache_mem_wready),
+        .mem_wlast(dcache_mem_wlast),
+        .mem_wdata(dcache_mem_wdata),
+        .mem_rdata(dcache_mem_rdata),
+        .mem_rvalid(dcache_mem_rvalid),
+        .mem_rlast(dcache_mem_rlast)
+    );
+
+    logic [7:0] store_done;
+
+    load_store_unit lsu (
+        .clk(sm_clk),
+        .reset(sm_reset),
+        .wb_buffer_full(wb_buffer_full),
+        // input transaction data from memory coalescing unit
+        .txn_valid(txn_valid),
+        .txn_is_load(txn_is_load),
+        .txn_last(txn_last),
+        .txn_warp(txn_warp),
+        .txn_dst(txn_dst),
+        .txn_match_mask(txn_match_mask),
+        .txn_word_sel(txn_word_sel),
+        // input data from data cache
+        .rsp_valid(dcache_rsp_valid),
+        .rsp_line(dcache_rsp_line),
+        // outputs to writeback_arbiter
+        .lsu_valid(lsu_valid_out),
+        .lsu_addr(lsu_reg_bank_addr),
+        .lsu_data(lsu_result),
+        // output to warp scheduler to clear warp
+        .store_done(store_done)
+    );
+
+    logic arb_cmd_ready, arb_wready, arb_rsp_valid, arb_rsp_last;
+    logic [127:0] arb_rsp_data;
+    logic arb_cmd_valid, arb_cmd_write, arb_wvalid;
+    logic [31:0] arb_cmd_addr;
+    logic [127:0] arb_wdata;
+
+    mem_arbiter memory_arbiter (
+        .clk(sm_clk),
+        .reset(sm_reset),
+        .i_cache_req_valid(icache_mem_req_valid),
+        .d_cache_req_valid(dcache_mem_req_valid),
+        .d_cache_req_write(dcache_mem_req_write),
+        .i_cache_req_addr(icache_mem_req_addr),
+        .d_cache_req_addr(dcache_mem_req_addr),
+        .i_cache_req_ready(icache_mem_req_ready),
+        .d_cache_req_ready(dcache_mem_req_ready),
+        .d_cache_wvalid(dcache_mem_wvalid),
+        .d_cache_wlast(dcache_mem_wlast),
+        .d_cache_wdata(dcache_mem_wdata),
+        .d_cache_wready(dcache_mem_wready),
+        .i_cache_rdata(icache_mem_rdata),
+        .d_cache_rdata(dcache_mem_rdata),
+        .i_cache_rvalid(icache_mem_rvalid),
+        .d_cache_rvalid(dcache_mem_rvalid),
+        .i_cache_rlast(icache_mem_rlast),
+        .d_cache_rlast(dcache_mem_rlast),
+        .arb_cmd_ready(arb_cmd_ready),
+        .arb_wready(arb_wready),
+        .rsp_valid(arb_rsp_valid),
+        .rsp_last(arb_rsp_last),
+        .rsp_data(arb_rsp_data),
+        .arb_cmd_valid(arb_cmd_valid),
+        .arb_cmd_write(arb_cmd_write),
+        .arb_cmd_addr(arb_cmd_addr),
+        .arb_wvalid(arb_wvalid),
+        .arb_wdata(arb_wdata)
+    );
+
+    logic cmd_full, cmd_empty, cmd_pop;
+    logic calib_sync_temp, calib_sync;
+    assign arb_cmd_ready = !cmd_full && calib_sync;
+    logic [25:0] cmd_rdata;
+
+    always_ff @(posedge sm_clk) begin
+        if (sm_reset) begin
+            calib_sync_temp <= 1'b0;
+            calib_sync <= 1'b0;
+        end else begin
+            calib_sync_temp <= init_calib_complete;
+            calib_sync <= calib_sync_temp;
+        end
+    end
+
+    // write side: mem_arbiter, read side: mem_expander
+    cdc_fifo #(.DATA_WIDTH(26), .DEPTH(4)) cmd_fifo (
+        .wclk(sm_clk),
+        .wrst(sm_reset),
+        .wen(arb_cmd_valid && arb_cmd_ready),
+        .wdata({arb_cmd_write, arb_cmd_addr[31:7]}),
+        .full(cmd_full),
+        .rclk(mem_ui_clk),
+        .rrst(mem_ui_reset),
+        .ren(cmd_pop),
+        .empty(cmd_empty),
+        .rdata(cmd_rdata)
+    );
+
+    // write side: mem_arbiter, read side: mem_expander
+
+    logic wr_full, wr_pop, wr_empty;
+    logic [127:0] wr_rdata;
+    assign arb_wready = !wr_full;
+
+    cdc_fifo #(.DATA_WIDTH(128), .DEPTH(16)) wr_fifo (
+        .wclk(sm_clk),
+        .wrst(sm_reset),
+        .wen(arb_wvalid & arb_wready),
+        .wdata(arb_wdata),
+        .full(wr_full),
+        .rclk(mem_ui_clk),
+        .rrst(mem_ui_reset),
+        .ren(wr_pop),
+        .empty(wr_empty),
+        .rdata(wr_rdata)
+    );
+
+    // write side: mem_expander, read_side: mem_arbiter
+
+    logic rd_wen, rd_ren, rd_full, rd_empty;
+    logic [128:0] rd_wdata, rd_rdata;
+    assign rd_ren = !rd_empty;
+    assign arb_rsp_valid = rd_ren;
+    assign {arb_rsp_last, arb_rsp_data} = rd_rdata;
+
+    cdc_fifo #(.DATA_WIDTH(129), .DEPTH(16)) rd_fifo (
+        .wclk(mem_ui_clk),
+        .wrst(mem_ui_reset),
+        .wen(rd_wen),
+        .wdata(rd_wdata),
+        .full(rd_full),
+        .rclk(sm_clk),
+        .rrst(sm_reset),
+        .ren(rd_ren),
+        .empty(rd_empty),
+        .rdata(rd_rdata)
+    );
+
+    mem_expander expander (
+        .ui_clk(mem_ui_clk),
+        .ui_rst(mem_ui_reset),
+        .init_calib_complete(init_calib_complete),
+        .cmd_empty(cmd_empty),
+        .cmd_rdata(cmd_rdata),
+        .cmd_pop(cmd_pop),
+        .wr_empty(wr_empty),
+        .wr_data(wr_rdata),
+        .wr_pop(wr_pop),
+        .rd_wen(rd_wen),
+        .rd_wdata(rd_wdata),
+        .rd_full(rd_full),
+        // MIG interface
+        .app_en(app_en),
+        .app_cmd(app_cmd),
+        .app_addr(app_addr),
+        .app_rdy(app_rdy), // driven in testbench
+        .app_wdf_data(app_wdf_data),
+        .app_wdf_wren(app_wdf_wren),
+        .app_wdf_end(app_wdf_end),
+        .app_wdf_mask(app_wdf_mask),
+        .app_wdf_rdy(app_wdf_rdy), // driven in testbench
+        .app_rd_data(app_rd_data), // rd data driven in testbench
+        .app_rd_data_valid(app_rd_data_valid) // rd data valid driven in testbench
+    );
 endmodule

@@ -8,6 +8,7 @@ module warp_scheduler #(
     input logic [3:0] num_warps,
 
     input logic [7:0] commit_done,
+    input logic [7:0] store_done,
     input logic [NUM_WARPS-1:0] push2_done,
 
     input logic [1:0] sub_warp_cycle,
@@ -15,10 +16,12 @@ module warp_scheduler #(
     input logic buffer_full,
 
     input logic done_detect,
+    input logic flush_done, // used to set kernel_done
 
     output logic [2:0] curr_warp,
     output logic [2:0] next_warp,
     output logic issue_valid,
+    output logic warps_done, // used to trigger flush_start in data cache
     output logic kernel_done
 );
     // State for each warp
@@ -29,7 +32,7 @@ module warp_scheduler #(
     logic [NUM_WARPS-1:0] ready_mask;
     always_comb begin
         for (int i = 0; i < NUM_WARPS; i++) begin
-            ready_mask[i] = (ready[i] | push2_done[i] | commit_done[i]) // ready
+            ready_mask[i] = (ready[i] | push2_done[i] | commit_done[i] | store_done[i]) // ready
                             & ~finished[i]                                                    // and not finished previously
                             & ~(i == curr_warp & done_detect);                                // or this cycle
         end
@@ -88,7 +91,7 @@ module warp_scheduler #(
         end else begin
             for (int i = 0; i < NUM_WARPS; i++) begin
                 logic set_ready, clear_ready;
-                set_ready = commit_done[i] || push2_done[i];
+                set_ready = commit_done[i] || store_done[i] || push2_done[i];
                 clear_ready = decision && next_valid_d && (next_warp_d == i[2:0]);
 
                 if (clear_ready) ready[i] <= 1'b0;
@@ -99,5 +102,12 @@ module warp_scheduler #(
         end
     end
 
-    assign kernel_done = &finished;
+    assign warps_done = &finished;
+    
+    always_ff @(posedge clk) begin
+        if (reset || kernel_start)
+            kernel_done <= 1'b0;
+        else if (warps_done && flush_done)
+            kernel_done <= 1'b1;
+    end
 endmodule

@@ -19,14 +19,13 @@ module load_store_unit (
 
     // outputs to writeback_arbiter
     output logic [7:0] lsu_valid,
-    output logic [7:0][9:0] lsu_addr,
+    output logic [9:0] lsu_addr,
     output logic [7:0][31:0] lsu_data,
     
     // output to warp scheduler to clear warp
     // issuing a store instruction since it
     // doesn't write a result to a register
-    output logic store_done,
-    output logic [2:0] store_done_warp
+    output logic [7:0] store_done
 );
     logic outstanding_valid;
     logic outstanding_is_load;
@@ -84,8 +83,12 @@ module load_store_unit (
 
     logic txn_complete;
     assign txn_complete = outstanding_valid && outstanding_last && rsp_valid;
-    assign store_done = txn_complete && !outstanding_is_load;
-    assign store_done_warp = outstanding_warp;
+    always_comb begin
+        store_done = '0;
+
+        if (txn_complete && !outstanding_is_load)
+            store_done[outstanding_warp] = 1'b1;
+    end
 
     logic [7:0][2:0] ready_fifo;
     logic [3:0] ready_count;
@@ -149,15 +152,15 @@ module load_store_unit (
 
     always_comb begin
         lsu_valid = '0;
-        lsu_addr = '0;
         lsu_data = '0;
 
         if (wb_active && !wb_buffer_full) begin
             for (int l = 0; l < 8; ++l) begin
                 lsu_valid[l] = slot_mask[wb_warp][8*wb_group + l];
-                lsu_addr[l] = {wb_warp, wb_group, slot_dst[wb_warp]};
                 lsu_data[l] = slot_data[wb_warp][8*wb_group + l];
             end
         end
+
+        lsu_addr = {wb_warp, wb_group, slot_dst[wb_warp]};
     end
 endmodule
