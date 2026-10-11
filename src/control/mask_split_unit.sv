@@ -5,6 +5,7 @@ module mask_split_unit #(
     input logic reset,
     input logic [1:0] sub_warp_cycle,
     input logic sub_warp_valid,
+    input logic buffer_full, // causes ALU to hold results for multiple cycles
 
     // Information about the branch
     input logic is_branch,
@@ -26,7 +27,7 @@ module mask_split_unit #(
 
     // Per-warp valid bit, one-hot for currently executing warp
     output logic [NUM_WARPS-1:0] recon_push2_valid,
-    output logic [NUM_WARPS-1:0] recon_current_pc_valid,
+    output logic [NUM_WARPS-1:0] recon_current_pc_valid
 );
     logic accum_done;
     assign accum_done = (&sub_warp_cycle && sub_warp_valid);
@@ -35,7 +36,7 @@ module mask_split_unit #(
         if (reset) begin
             push2_mask_taken <= 32'b0;
             push2_mask_not_taken <= 32'b0;
-        end else if (is_branch) begin
+        end else if (is_branch && !buffer_full) begin
             case (sub_warp_cycle)
                 2'd0: begin
                     push2_mask_taken[7:0] <= sub_warp_valid ? is_valid & branch_taken_bits : push2_mask_taken[7:0];
@@ -58,11 +59,11 @@ module mask_split_unit #(
     end
 
     always_ff @(posedge clk) begin
-        if (reset || ~accum_done) begin
+        if (reset) begin
             push2_pc_taken <= 32'b0;
             push2_pc_fallthrough <= 32'b0;
             push2_recon_pc <= 32'b0;
-        end else begin
+        end else if (!buffer_full) begin
             push2_pc_taken <= pc_taken;
             push2_pc_fallthrough <= branch_pc + 32'd4;
             push2_recon_pc <= branch_pc + {{26{push2_pc_recon_offset[5]}}, push2_pc_recon_offset};
@@ -81,8 +82,8 @@ module mask_split_unit #(
             recon_push2_valid <= 1'b0;
             recon_current_pc_valid <= 1'b0; 
         end else begin
-            recon_push2_valid <= exec_warp_id & {NUM_WARPS{accum_done && is_branch && ~reset}};
-            recon_current_pc_valid <= exec_warp_id & {NUM_WARPS{accum_done && !is_branch && ~reset}}; 
+            recon_push2_valid <= exec_warp_id & {NUM_WARPS{accum_done && is_branch && !reset && !buffer_full}};
+            recon_current_pc_valid <= exec_warp_id & {NUM_WARPS{accum_done && !is_branch && !buffer_full}}; 
         end
     end
 endmodule

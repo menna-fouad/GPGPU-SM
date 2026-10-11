@@ -2,6 +2,7 @@ module fetch_stage (
     input logic clk,
     input logic reset,
     input logic kernel_launch,
+    input logic issue_valid, // valid (ready) warp issued
     input logic [2:0] next_warp,
     input logic [31:0] top_pc,
     input logic [31:0] recon_pc,
@@ -22,6 +23,7 @@ module fetch_stage (
     logic [127:0] fill_pcs;
     logic fill_valid, req_outstanding;
     logic request_active;
+    logic buf_valid;
 
     assign request_active = icache_req_valid || req_outstanding;
 
@@ -35,7 +37,7 @@ module fetch_stage (
             icache_req_valid = 0;
             icache_addr = 32'h0000_0000;
         end else begin
-            icache_req_valid = !fetch_valid && !req_outstanding;
+            icache_req_valid = issue_valid && !buf_valid && !req_outstanding;
             icache_addr = top_pc;
         end
     end
@@ -66,6 +68,8 @@ module fetch_stage (
 
         .instr(instr),
         .instr_pc(instr_pc),
-        .fetch_valid(fetch_valid)
+        .fetch_valid(buf_valid)
     );
+
+    assign fetch_valid = buf_valid && issue_valid;
 endmodule

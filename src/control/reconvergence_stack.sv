@@ -113,7 +113,7 @@ module recon_stack # (
     assign top_recon_pc = recon_pcs[top_valid];
 
     assign stack_empty = ~|next_free; // (next_free == 0)
-    assign stack_full = (next_free >= DEPTH - 1);
+    assign stack_full = (next_free >= DEPTH - 2);
     assign push2_done = push2_valid && !stack_full;
 
     `ifdef SYNTHESIS

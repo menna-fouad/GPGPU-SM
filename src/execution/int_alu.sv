@@ -7,14 +7,13 @@ module int_alu (
     input logic sub_warp_valid_in,
     input logic [1:0] sub_warp_cycle_in,
     input logic [9:0] reg_bank_addr_in,
-    input logic [31:0] branch_pc_in,
 
     input logic [5:0] opcode,
     input logic [31:0] src1,
     input logic [31:0] src2,
     
     // PC and offset for branch instructions
-    input logic [31:0] PC,
+    input logic [31:0] instr_pc,
     input logic [15:0] offset,
     output logic valid_out,
     output logic branch_taken,
@@ -82,7 +81,7 @@ module int_alu (
                 endcase
 
                 BRANCH : begin
-                    result <= PC + {{22{offset[15]}}, offset[15:6]};
+                    result <= instr_pc + {{22{offset[15]}}, offset[15:6]};
                     case (opcode[2:0])
                         BEQ : branch_taken <= (src1 == src2);
                         BNE : branch_taken <= (src1 != src2);
@@ -115,7 +114,7 @@ module int_alu (
             is_load <= (opcode == {I_TYPE, LOAD});
             is_store <= (opcode == {I_TYPE, STORE});
             valid_out <= valid_in;
-            branch_pc_out <= branch_pc_in;
+            branch_pc_out <= instr_pc;
             push2_pc_recon_offset <= offset[5:0];
             src2_out <= src2;
             reg_bank_addr_out <= reg_bank_addr_in;

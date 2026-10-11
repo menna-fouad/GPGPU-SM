@@ -7,8 +7,7 @@ module warp_scheduler #(
     input logic kernel_start,
     input logic [3:0] num_warps,
 
-    input logic commit_done,
-    input logic [2:0] commit_warp_id,
+    input logic [7:0] commit_done,
     input logic [NUM_WARPS-1:0] push2_done,
 
     input logic [1:0] sub_warp_cycle,
@@ -30,7 +29,7 @@ module warp_scheduler #(
     logic [NUM_WARPS-1:0] ready_mask;
     always_comb begin
         for (int i = 0; i < NUM_WARPS; i++) begin
-            ready_mask[i] = (ready[i] | push2_done[i] | (commit_done && i == commit_warp_id)) // ready
+            ready_mask[i] = (ready[i] | push2_done[i] | commit_done[i]) // ready
                             & ~finished[i]                                                    // and not finished previously
                             & ~(i == curr_warp & done_detect);                                // or this cycle
         end
@@ -89,7 +88,7 @@ module warp_scheduler #(
         end else begin
             for (int i = 0; i < NUM_WARPS; i++) begin
                 logic set_ready, clear_ready;
-                set_ready = ((commit_done && commit_warp_id == i[2:0]) || push2_done[i]);
+                set_ready = commit_done[i] || push2_done[i];
                 clear_ready = decision && next_valid_d && (next_warp_d == i[2:0]);
 
                 if (clear_ready) ready[i] <= 1'b0;
