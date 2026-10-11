@@ -34,7 +34,7 @@ module int_alu (
     output logic [31:0] src2_out // for store instruction
 );
     // Define parameters for instruction types
-    localparam R_TYPE = 3'b000, I_TYPE = 3'b001, FMA = 3'b010, BRANCH = 3'b011, DONE = 3'b111;
+    localparam R_TYPE = 3'b000, I_TYPE = 3'b001, BRANCH = 3'b011;
 
     // Define parameters for specific instructions
     // R-type instructions
@@ -87,6 +87,7 @@ module int_alu (
                         BNE : branch_taken <= (src1 != src2);
                         BLT : branch_taken <= ($signed(src1) < $signed(src2));
                         BGE : branch_taken <= ($signed(src1) >= $signed(src2));
+                        default : ; // do nothing
                     endcase
                 end
                 

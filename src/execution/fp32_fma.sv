@@ -58,7 +58,7 @@ module fp32_fma(
     logic [7:0] exp3_q;
     logic sign3_q;
 
-    always_ff @(posedge clk or posedge reset) begin
+    always_ff @(posedge clk) begin
         if (reset) begin
             valid_mul_q <= 1'b0;
             mant_mul_q <= 48'b0;
@@ -132,7 +132,7 @@ module fp32_fma(
     logic alignment_sticky_q;
     logic [9:0] reg_bank_addr_aligned_q;
 
-    always_ff @(posedge clk or posedge reset) begin
+    always_ff @(posedge clk) begin
         if (reset) begin
             valid_aligned_q <= 1'b0;
             sign3_aligned_q <= 1'b0;
@@ -182,7 +182,7 @@ module fp32_fma(
     logic guard_add_q, round_add_q, sticky_add_q;
     logic [9:0] reg_bank_addr_add_q;
 
-    always_ff @(posedge clk or posedge reset) begin
+    always_ff @(posedge clk) begin
         if (reset) begin
             valid_add_q <= 1'b0;
             mant_add_q <= 25'b0;
@@ -280,7 +280,7 @@ module fp32_fma(
     logic norm_exp_underflow_q, norm_exp_overflow_q;
     logic norm_is_true_zero_q;
 
-    always_ff @(posedge clk or posedge reset) begin
+    always_ff @(posedge clk) begin
         if (reset) begin
             norm_mant_q <= 24'b0;
             norm_exp_q <= 8'b0;

@@ -22,7 +22,7 @@ module prefetch_buffer #(
 );
     logic [31:0] data [0:NUM_WARPS*DEPTH_PER_WARP-1];
     logic [31:0] pcs  [0:NUM_WARPS*DEPTH_PER_WARP-1];
-    logic [0:NUM_WARPS*DEPTH_PER_WARP-1] valid;
+    logic [NUM_WARPS*DEPTH_PER_WARP-1:0] valid;
 
     logic [4:0] next_warp_base;
     assign next_warp_base = {2'b0, next_warp} << 2;

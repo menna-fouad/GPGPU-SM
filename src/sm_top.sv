@@ -1,4 +1,4 @@
-module sm_top(
+module sm_top (
     input logic sm_clk,
     input logic sm_reset,
 

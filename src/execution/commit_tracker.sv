@@ -40,7 +40,7 @@ module commit_tracker (
         end
     end
 
-    always_ff @(posedge clk or posedge reset) begin
+    always_ff @(posedge clk) begin
         if (reset) begin
             wb_completed_mask <= '0;
             commit_done <= '0;
