@@ -2,6 +2,8 @@ module commit_tracker (
     input logic clk,
     input logic reset,
 
+    input logic consume,
+    input logic [2:0] ws_next_warp,
     input logic [7:0][31:0] recon_top_mask_arr,
 
     input logic [7:0] rf_write_enable,
@@ -9,9 +11,8 @@ module commit_tracker (
     
     output logic [7:0] commit_done
 );
-    logic [7:0][31:0] wb_completed_mask;
-    logic [7:0][31:0] wb_completed_mask_next;
-    
+    logic [7:0][31:0] pending_mask;
+    logic [7:0][31:0] wb_completed_mask, wb_completed_mask_next;
     logic [7:0] warp_complete;
 
     logic [7:0][2:0] warp_id;
@@ -35,13 +36,14 @@ module commit_tracker (
 
         // Check whether all expected threads have written back
         for (int w = 0; w < 8; ++w) begin
-            if ((wb_completed_mask_next[w] & recon_top_mask_arr[w]) == recon_top_mask_arr[w])
+            if (pending_mask[w] != 0 && ((wb_completed_mask_next[w] & pending_mask[w]) == pending_mask[w]))
                 warp_complete[w] = 1'b1;
         end
     end
 
     always_ff @(posedge clk) begin
         if (reset) begin
+            pending_mask <= '0;
             wb_completed_mask <= '0;
             commit_done <= '0;
         end else begin
@@ -49,8 +51,15 @@ module commit_tracker (
             commit_done <= warp_complete;
 
             for (int w = 0; w < 8; ++w) begin
-                if (warp_complete[w])
+                if (warp_complete[w]) begin
                     wb_completed_mask[w] <= '0;
+                    pending_mask[w] <= '0;
+                end
+            end
+
+            if (consume) begin
+                pending_mask[ws_next_warp] <= recon_top_mask_arr[ws_next_warp];
+                wb_completed_mask[ws_next_warp] <= '0;
             end
         end
     end

@@ -10,6 +10,10 @@ module warp_scheduler #(
     input logic [7:0] commit_done,
     input logic [7:0] store_done,
     input logic [NUM_WARPS-1:0] push2_done,
+    output logic have_ready,
+
+    input logic consume,
+    output logic fetch_allowed,
 
     input logic [1:0] sub_warp_cycle,
     input logic sub_warp_valid,
@@ -39,7 +43,6 @@ module warp_scheduler #(
     end
 
     logic [2:0] picked_warp;
-    logic have_ready;
     always_comb begin
         have_ready = |ready_mask;
         picked_warp = '0;
@@ -88,6 +91,23 @@ module warp_scheduler #(
             issue_valid <= 1'b1;
         end
     end
+
+    logic [NUM_WARPS-1:0] instr_busy;
+
+    always_ff @(posedge clk) begin
+        if (reset || kernel_start) begin
+            instr_busy <= '0;
+        end else begin
+            for (int i = 0; i < NUM_WARPS; i++) begin
+                if (consume && next_warp == i[2:0])
+                    instr_busy[i] <= 1'b1;
+                else if (commit_done[i] || store_done[i] || push2_done[i])
+                    instr_busy[i] <= 1'b0;
+            end
+        end
+    end
+
+    assign fetch_allowed = !instr_busy[next_warp] && !finished[next_warp];
 
     always_ff @(posedge clk) begin
         if (reset) begin

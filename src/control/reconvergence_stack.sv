@@ -96,7 +96,8 @@ module recon_stack # (
                         next_free <= next_free + 1;
                     end
                     2'd0: begin
-                        next_free <= next_free;
+                        if (push2_recon_pc == recon_pcs[top_valid])
+                            next_free <= next_free - 1'b1;
                     end
                     default: ; // unreachable
                 endcase

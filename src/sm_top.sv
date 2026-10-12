@@ -27,7 +27,7 @@ module sm_top (
     input  logic [127:0] app_rd_data,
     input  logic app_rd_data_valid
 );
-    logic fetch_valid, wb_buffer_full, sub_warp_valid;
+    logic fetch_valid, wb_buffer_full, sub_warp_valid, have_ready;
     logic [1:0] sub_warp_cycle;
 
     sub_warp_counter u_sub_warp_counter (
@@ -35,10 +35,12 @@ module sm_top (
         .reset(sm_reset),
         .fetch_valid(fetch_valid), // from fetch_stage
         .buffer_full(wb_buffer_full), // from writeback_arbiter
+        .have_ready(have_ready), // from warp_scheduler
         .sub_warp_cycle(sub_warp_cycle),
         .sub_warp_valid(sub_warp_valid)
     );
 
+    logic consume, fetch_allowed;
     logic dec_done_detect;
     logic [7:0] commit_done;
     logic [7:0] recon_push2_done_arr;
@@ -47,7 +49,9 @@ module sm_top (
     logic ws_issue_valid;
     logic warps_done;
 
-    warp_scheduler u_warp_sheduler (
+    assign consume = ws_issue_valid && ~|sub_warp_cycle && sub_warp_valid && !wb_buffer_full;
+
+    warp_scheduler u_warp_scheduler (
         .clk(sm_clk),
         .reset(sm_reset),
         .kernel_start(kernel_start),
@@ -55,6 +59,9 @@ module sm_top (
         .commit_done(commit_done), // from commit_tracker
         .store_done(store_done), // from load_store_unit
         .push2_done(recon_push2_done_arr), // from recon_pc
+        .have_ready(have_ready), // output to sub_warp_counter
+        .consume(consume),
+        .fetch_allowed(fetch_allowed),
         .sub_warp_cycle(sub_warp_cycle), // from u_sub_warp_counter
         .sub_warp_valid(sub_warp_valid), // from u_sub_warp_counter
         .buffer_full(wb_buffer_full), // from writeback_arbiter
@@ -114,13 +121,10 @@ module sm_top (
     endgenerate
 
     logic [31:0] fs_instr, fs_instr_pc;
-    logic consume;
 
     logic icache_req_ready, icache_req_valid, icache_rsp_valid;
     logic [31:0] icache_req_addr;
     logic [127:0] icache_data;
-
-    assign consume = ws_issue_valid && ~|sub_warp_cycle && sub_warp_valid && !wb_buffer_full;
 
     fetch_stage u_fetch (
         .clk(sm_clk),
@@ -130,6 +134,7 @@ module sm_top (
         .next_warp(ws_next_warp),
         .top_pc(recon_top_pc_arr[ws_next_warp]),
         .recon_pc(recon_top_recon_pc_arr[ws_next_warp]),
+        .fetch_allowed(fetch_allowed),
         .consume(consume),
         .icache_ready(icache_req_ready),
         .icache_rsp_valid(icache_rsp_valid),
@@ -143,7 +148,7 @@ module sm_top (
         .seq_pc_valid(seq_pc_valid)
     );
 
-    logic [31:0] il_instr, il_instr_pc;
+    logic [31:0] il_instr, il_instr_pc, il_active_mask;
     logic [9:0] il_src1_addr, il_src2_addr, il_src3_addr;
 
     instruction_latch u_instruction_latch (
@@ -156,6 +161,8 @@ module sm_top (
         .curr_warp(ws_curr_warp),
         .buf_instr(fs_instr),
         .buf_instr_pc(fs_instr_pc),
+        .active_mask(recon_top_mask_arr[ws_next_warp]),
+        .active_mask_q(il_active_mask),
         .instr_q(il_instr),
         .instr_pc_q(il_instr_pc),
         .src1_addr(il_src1_addr),
@@ -178,7 +185,7 @@ module sm_top (
         .sub_warp_valid(sub_warp_valid),
         .sub_warp_cycle(sub_warp_cycle),
         .curr_warp(ws_curr_warp),
-        .active_mask(recon_top_mask_arr[ws_curr_warp]),
+        .active_mask(il_active_mask),
         .instr(il_instr),
         .instr_pc(il_instr_pc),
         .sub_warp_valid_q(dec_sub_warp_valid),
@@ -387,6 +394,8 @@ module sm_top (
     commit_tracker u_commit_tracker (
         .clk(sm_clk),
         .reset(sm_reset),
+        .consume(consume),
+        .ws_next_warp(ws_next_warp),
         .recon_top_mask_arr(recon_top_mask_arr),
         .rf_write_enable(wb_rf_write_enable),
         .rf_write_addr(wb_rf_write_addr_arr),

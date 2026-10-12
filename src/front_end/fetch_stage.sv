@@ -7,6 +7,7 @@ module fetch_stage (
     input logic [31:0] top_pc,
     input logic [31:0] recon_pc,
 
+    input logic fetch_allowed,
     input logic consume, // calculated externally by
                          // (sub_warp_cycle == 2'd0) && sub_warp_valid
     
@@ -41,7 +42,7 @@ module fetch_stage (
             icache_req_valid = 0;
             icache_addr = 32'h0000_0000;
         end else begin
-            icache_req_valid = issue_valid && !buf_valid && !req_outstanding;
+            icache_req_valid = issue_valid && fetch_allowed && !buf_valid && !req_outstanding;
             icache_addr = top_pc;
         end
     end
@@ -75,7 +76,7 @@ module fetch_stage (
         .fetch_valid(buf_valid)
     );
 
-    assign fetch_valid = buf_valid && issue_valid;
+    assign fetch_valid = buf_valid && issue_valid && fetch_allowed;
     assign seq_pc_valid = consume && fetch_valid;
     assign seq_next_pc = instr_pc + 32'd4;
 endmodule

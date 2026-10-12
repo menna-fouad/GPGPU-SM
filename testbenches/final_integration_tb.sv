@@ -194,6 +194,21 @@ module final_integration_tb;
                     u_sm_top.gen_reg_bank[lane].u_reg_file.bram3[addr] = 32'b0;
                 end
             endtask
+
+            task automatic set_register(
+                input logic [2:0] warp,
+                input logic [1:0] sw,
+                input logic [4:0] reg_num,
+                input logic [31:0] value
+            );
+                logic [9:0] addr;
+
+                addr = {warp, sw, reg_num};
+
+                u_sm_top.gen_reg_bank[lane].u_reg_file.bram1[addr] = value;
+                u_sm_top.gen_reg_bank[lane].u_reg_file.bram2[addr] = value;
+                u_sm_top.gen_reg_bank[lane].u_reg_file.bram3[addr] = value;
+            endtask
         end
     endgenerate
 
@@ -256,7 +271,7 @@ module final_integration_tb;
 
         $display("TEST 1 PASSED");
 
-        $display("TEST 2: Single-warp arithmetic instructions and register writeback");
+        $display("\nTEST 2: Single-warp arithmetic instructions and register writeback");
 
         /*
         ADDI R1, R0, 10     // R1 = 10
@@ -297,6 +312,76 @@ module final_integration_tb;
         end
 
         $display("TEST 2 PASSED");
+
+        // TEST: Single-warp branch divergence and reconvergence
+
+        $display("\nTEST 3: Single-warp branch divergence");
+        
+        /*
+        0x00: BNE  r1, r0, target=0x10, reconverge=0x18
+        0x04: ADDI r2, r0, 22
+        0x08: ADDI r3, r0, 33
+        0x0C: BEQ  r0, r0, target=0x18  // Unconditional branch
+        0x10: ADDI r4, r0, 44
+        0x14: ADDI r5, r0, 55
+        0x18: ADDI r6, r0, 66
+        0x1C: DONE
+        */
+
+        reset();
+        mig_mem.delete();
+
+        init_rf[0].initialize();
+        init_rf[1].initialize();
+        init_rf[2].initialize();
+        init_rf[3].initialize();
+        init_rf[4].initialize();
+        init_rf[5].initialize();
+        init_rf[6].initialize();
+        init_rf[7].initialize();
+
+        for (int sw = 2; sw < 4; sw++) begin
+            init_rf[0].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+            init_rf[1].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+            init_rf[2].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+            init_rf[3].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+            init_rf[4].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+            init_rf[5].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+            init_rf[6].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+            init_rf[7].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+        end
+
+        load_instruction(32'h00, encode_branch(BNE, 5'd1, 5'd0, 10'd16, 6'd24));
+        load_instruction(32'h04, encode_i(ADDI, 5'd0, 5'd2, 16'd22));
+        load_instruction(32'h08, encode_i(ADDI, 5'd0, 5'd3, 16'd33));
+        load_instruction(32'h0C, encode_branch(BEQ, 5'd0, 5'd0, 10'd12, 6'd12));
+        load_instruction(32'h10, encode_i(ADDI, 5'd0, 5'd4, 16'd44));
+        load_instruction(32'h14, encode_i(ADDI, 5'd0, 5'd5, 16'd55));
+        load_instruction(32'h18, encode_i(ADDI, 5'd0, 5'd6, 16'd66));
+        load_instruction(32'h1C, DONE_INSTR);
+
+        // Launch one warp and wait for completion using your existing tasks.
+        launch_kernel(4'd1);
+        wait_for_kernel_done(50000);
+
+        // Verify branch execution results
+        for (int sw = 0; sw < 4; sw++) begin
+            // R1: Branch condition
+            check_all_lanes(3'd0, 2'(sw), 5'd1, (sw < 2) ? 32'd0 : 32'd1);
+
+            // Not-taken path: threads 0-15
+            check_all_lanes(3'd0, 2'(sw), 5'd2, (sw < 2) ? 32'd22 : 32'd0);
+            check_all_lanes(3'd0, 2'(sw), 5'd3, (sw < 2) ? 32'd33 : 32'd0);
+
+            // Taken path: threads 16-31
+            check_all_lanes(3'd0, 2'(sw), 5'd4, (sw >= 2) ? 32'd44 : 32'd0);
+            check_all_lanes(3'd0, 2'(sw), 5'd5, (sw >= 2) ? 32'd55 : 32'd0);
+
+            // Reconvergence: all 32 threads
+            check_all_lanes(3'd0, 2'(sw), 5'd6, 32'd66);
+        end
+
+        $display("TEST 3: Single-warp branch divergence PASSED");
 
         $finish;
     end
