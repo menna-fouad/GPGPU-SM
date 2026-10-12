@@ -270,6 +270,9 @@ module final_integration_tb;
         logic [31:0] c [0:3];
         logic [31:0] expected [0:3];
 
+        logic [31:0] addr1, addr2;
+        logic [22:0] beat1, beat2;
+
         $dumpfile("final_integration_tb");
         $dumpvars(0, final_integration_tb);
 
@@ -506,6 +509,73 @@ module final_integration_tb;
         end
 
         $display("TEST 4: Single-warp FP32 FMA integration PASSED");
+
+        $display("\nTEST 5: Single-warp LOAD/STORE integration");
+        reset();
+        mig_mem.delete();
+
+        init_rf[0].initialize();
+        init_rf[1].initialize();
+        init_rf[2].initialize();
+        init_rf[3].initialize();
+        init_rf[4].initialize();
+        init_rf[5].initialize();
+        init_rf[6].initialize();
+        init_rf[7].initialize();
+
+        /*
+            LOAD  R4, [R1]       // Cache miss
+            STORE R5, [R1 + 4]   // Store hit
+            LOAD  R6, [R1 + 4]   // Read after store
+            STORE R5, [R2]       // Store miss (write-allocate)
+            LOAD  R7, [R2]       // Read after write-allocate
+            DONE
+        */
+
+        load_instruction('h00, encode_i(LOAD,  1, 4, 0));
+        load_instruction('h04, encode_i(STORE, 1, 5, 4));
+        load_instruction('h08, encode_i(LOAD,  1, 6, 4));
+        load_instruction('h0C, encode_i(STORE, 2, 5, 0));
+        load_instruction('h10, encode_i(LOAD,  2, 7, 0));
+        load_instruction('h14, DONE_INSTR);
+
+        // Each subwarp accesses a different cache line.
+        // All 8 lanes within a subwarp access the same address.
+        for (int sw = 0; sw < 4; ++sw) begin
+            set_all_lanes(0, 2'(sw), 1, 32'h1000 + sw*128);
+            set_all_lanes(0, 2'(sw), 2, 32'h2000 + sw*128);
+            set_all_lanes(0, 2'(sw), 5, 32'hCAFE_0000 + sw);
+        end
+
+        launch_kernel(4'd1);
+        wait_for_kernel_done(50000);
+
+        // Verify register writebacks
+        for (int sw = 0; sw < 4; ++sw) begin
+            check_all_lanes(0, 2'(sw), 4, (32'h1000 + sw*128) ^ K);
+            check_all_lanes(0, 2'(sw), 6, 32'hCAFE_0000 + sw);
+            check_all_lanes(0, 2'(sw), 7, 32'hCAFE_0000 + sw);
+        end
+
+        // Verify dirty lines were written back during kernel flush
+        for (int sw = 0; sw < 4; ++sw) begin
+            addr1 = 32'h1004 + sw*128;
+            addr2 = 32'h2000 + sw*128;
+
+            beat1 = addr1[26:4];
+            beat2 = addr2[26:4];
+
+            assert (mig_mem.exists(beat1) && mig_mem.exists(beat2))
+                else $fatal(1, "TEST 5: Missing dirty-line writeback");
+
+            assert (mig_mem[beat1][32*addr1[3:2] +: 32] === (32'hCAFE_0000 + sw))
+                else $fatal(1, "TEST 5: STORE hit writeback failed");
+
+            assert (mig_mem[beat2][32*addr2[3:2] +: 32] === (32'hCAFE_0000 + sw))
+                else $fatal(1, "TEST 5: STORE miss writeback failed");
+        end
+
+        $display("TEST 5: Single-warp LOAD/STORE integration PASSED");
 
         $finish;
     end
