@@ -212,6 +212,22 @@ module final_integration_tb;
         end
     endgenerate
 
+    task automatic set_all_lanes(
+        input logic [2:0] warp,
+        input logic [1:0] sw,
+        input logic [4:0] reg_num,
+        input logic [31:0] value
+    );
+        init_rf[0].set_register(warp, sw, reg_num, value);
+        init_rf[1].set_register(warp, sw, reg_num, value);
+        init_rf[2].set_register(warp, sw, reg_num, value);
+        init_rf[3].set_register(warp, sw, reg_num, value);
+        init_rf[4].set_register(warp, sw, reg_num, value);
+        init_rf[5].set_register(warp, sw, reg_num, value);
+        init_rf[6].set_register(warp, sw, reg_num, value);
+        init_rf[7].set_register(warp, sw, reg_num, value);
+    endtask
+
     generate
         for (genvar lane = 0; lane < 8; lane++) begin : check_rf
             task automatic check_register(
@@ -249,6 +265,10 @@ module final_integration_tb;
 
     initial begin
         localparam logic [31:0] DONE_INSTR = 32'hFC00_0000;
+        logic [31:0] a [0:3];
+        logic [31:0] b [0:3];
+        logic [31:0] c [0:3];
+        logic [31:0] expected [0:3];
 
         $dumpfile("final_integration_tb");
         $dumpvars(0, final_integration_tb);
@@ -401,6 +421,91 @@ module final_integration_tb;
         end
 
         $display("TEST 3: Single-warp branch divergence PASSED");
+
+        $display("\nTEST 4: Single-warp FP32 FMA integration");
+        reset();
+        mig_mem.delete();
+
+        // Clear all register files
+        init_rf[0].initialize();
+        init_rf[1].initialize();
+        init_rf[2].initialize();
+        init_rf[3].initialize();
+        init_rf[4].initialize();
+        init_rf[5].initialize();
+        init_rf[6].initialize();
+        init_rf[7].initialize();
+
+        /*
+            Kernel:
+
+            0x00: FMA  R4, R1, R2, R3
+            0x04: ADDI R5, R0, 42
+            0x08: FMA  R6, R7, R8, R9
+            0x0C: DONE
+
+            First FMA: Four different calculations across subwarps
+            Second FMA: Two additional calculations across subwarps
+        */
+
+        // First FMA operands and expected results
+
+        // Subwarp 0: 3.0 * 2.0 + 1.5 = 7.5
+        a[0] = 32'h40400000;
+        b[0] = 32'h40000000;
+        c[0] = 32'h3FC00000;
+        expected[0] = 32'h40F00000;
+
+        // Subwarp 1: 3.0 * 2.0 - 1.5 = 4.5
+        a[1] = 32'h40400000;
+        b[1] = 32'h40000000;
+        c[1] = 32'hBFC00000;
+        expected[1] = 32'h40900000;
+
+        // Subwarp 2: -3.0 * 2.0 + 1.5 = -4.5
+        a[2] = 32'hC0400000;
+        b[2] = 32'h40000000;
+        c[2] = 32'h3FC00000;
+        expected[2] = 32'hC0900000;
+
+        // Subwarp 3: -3.0 * 2.0 + 0.5 = -5.5
+        a[3] = 32'hC0400000;
+        b[3] = 32'h40000000;
+        c[3] = 32'h3F000000;
+        expected[3] = 32'hC0B00000;
+
+        // Initialize operands for all 8 lanes across 4 subwarps
+        for (int sw = 0; sw < 4; ++sw) begin
+            set_all_lanes(3'd0, 2'(sw), 5'd1, a[sw]);
+            set_all_lanes(3'd0, 2'(sw), 5'd2, b[sw]);
+            set_all_lanes(3'd0, 2'(sw), 5'd3, c[sw]);
+
+            // Second FMA: R6 = R7 * R8 + R9
+            // -3.0 * -2.0 + 1.5 = 7.5 (subwarps 0 and 1)
+            // -3.0 * -2.0 - 1.5 = 4.5 (subwarps 2 and 3)
+            set_all_lanes(3'd0, 2'(sw), 5'd7, 32'hC0400000);
+            set_all_lanes(3'd0, 2'(sw), 5'd8, 32'hC0000000);
+            set_all_lanes(3'd0, 2'(sw), 5'd9, (sw < 2) ? 32'h3FC00000 : 32'hBFC00000);
+        end
+
+        // Load kernel instructions
+        load_instruction(32'h00, encode_fma(5'd1, 5'd2, 5'd3, 5'd4));
+        load_instruction(32'h04, encode_i(ADDI, 5'd0, 5'd5, 16'd42));
+        load_instruction(32'h08, encode_fma(5'd7, 5'd8, 5'd9, 5'd6));
+        load_instruction(32'h0C, DONE_INSTR);
+
+        // Launch one warp
+        launch_kernel(4'd1);
+        wait_for_kernel_done(50000);
+
+        // Verify all 32 threads (8 lanes x 4 subwarps)
+        for (int sw = 0; sw < 4; ++sw) begin
+            check_all_lanes(3'd0, 2'(sw), 5'd4, expected[sw]); // First FMA
+            check_all_lanes(3'd0, 2'(sw), 5'd5, 32'd42); // Integer ALU
+            check_all_lanes(3'd0, 2'(sw), 5'd6, (sw < 2) ? 32'h40F00000 : 32'h40900000); // Second FMA
+        end
+
+        $display("TEST 4: Single-warp FP32 FMA integration PASSED");
 
         $finish;
     end
