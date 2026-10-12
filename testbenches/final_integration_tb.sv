@@ -128,6 +128,9 @@ module final_integration_tb;
     // Special reg instructions
     localparam logic [5:0] MOV_TID = 6'b100001, MOV_WID = 6'b100010, MOV_BID = 6'b100100;
 
+    // DONE Instruction
+    localparam logic [31:0] DONE_INSTR = 32'hFC00_0000;
+
     // R-type: opcode | src1 | src2 | dst | unused
     function automatic logic [31:0] encode_r(
         input logic [5:0] opcode,
@@ -209,8 +212,37 @@ module final_integration_tb;
                 u_sm_top.gen_reg_bank[lane].u_reg_file.bram2[addr] = value;
                 u_sm_top.gen_reg_bank[lane].u_reg_file.bram3[addr] = value;
             endtask
+
+            task automatic check_register(
+                input logic [2:0] warp,
+                input logic [1:0] sw,
+                input logic [4:0] reg_num,
+                input logic [31:0] expected
+            );
+                logic [9:0] addr;
+                addr = {warp, sw, reg_num};
+
+                assert (
+                    u_sm_top.gen_reg_bank[lane].u_reg_file.bram1[addr] === expected &&
+                    u_sm_top.gen_reg_bank[lane].u_reg_file.bram2[addr] === expected &&
+                    u_sm_top.gen_reg_bank[lane].u_reg_file.bram3[addr] === expected
+                )
+                    else $fatal(1, "Register mismatch: lane %0d, warp %0d, sw %0d, R%0d",
+                                lane, warp, sw, reg_num);
+            endtask
         end
     endgenerate
+
+    task automatic initialize_all_lanes();
+        init_rf[0].initialize();
+        init_rf[1].initialize();
+        init_rf[2].initialize();
+        init_rf[3].initialize();
+        init_rf[4].initialize();
+        init_rf[5].initialize();
+        init_rf[6].initialize();
+        init_rf[7].initialize();
+    endtask
 
     task automatic set_all_lanes(
         input logic [2:0] warp,
@@ -227,25 +259,6 @@ module final_integration_tb;
         init_rf[6].set_register(warp, sw, reg_num, value);
         init_rf[7].set_register(warp, sw, reg_num, value);
     endtask
-
-    generate
-        for (genvar lane = 0; lane < 8; lane++) begin : check_rf
-            task automatic check_register(
-                input logic [2:0] warp,
-                input logic [1:0] sw,
-                input logic [4:0] reg_num,
-                input logic [31:0] expected
-            );
-                logic [9:0] addr;
-                addr = {warp, sw, reg_num};
-
-                assert (u_sm_top.gen_reg_bank[lane].u_reg_file.bram1[addr] === expected)
-                    else $fatal(1, "Lane %0d, warp %0d, subwarp %0d, R%0d: expected %0d, got %0d",
-                                    lane, warp, sw, reg_num, expected,
-                                    u_sm_top.gen_reg_bank[lane].u_reg_file.bram1[addr]);
-            endtask
-        end
-    endgenerate
 
     task automatic check_all_lanes(
         input logic [2:0] warp,
@@ -264,7 +277,6 @@ module final_integration_tb;
     endtask
 
     initial begin
-        localparam logic [31:0] DONE_INSTR = 32'hFC00_0000;
         logic [31:0] a [0:3];
         logic [31:0] b [0:3];
         logic [31:0] c [0:3];
@@ -314,14 +326,7 @@ module final_integration_tb;
         load_instruction('h10, encode_r(MUL, 4, 2, 5));
         load_instruction('h14, DONE_INSTR);
 
-        init_rf[0].initialize();
-        init_rf[1].initialize();
-        init_rf[2].initialize();
-        init_rf[3].initialize();
-        init_rf[4].initialize();
-        init_rf[5].initialize();
-        init_rf[6].initialize();
-        init_rf[7].initialize();
+        initialize_all_lanes();
 
         launch_kernel(4'd1);
         wait_for_kernel_done(50000);
@@ -368,34 +373,13 @@ module final_integration_tb;
         reset();
         mig_mem.delete();
 
-        init_rf[0].initialize();
-        init_rf[1].initialize();
-        init_rf[2].initialize();
-        init_rf[3].initialize();
-        init_rf[4].initialize();
-        init_rf[5].initialize();
-        init_rf[6].initialize();
-        init_rf[7].initialize();
+        initialize_all_lanes();
 
         for (int sw = 2; sw < 4; sw++) begin
-            init_rf[0].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
-            init_rf[1].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
-            init_rf[2].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
-            init_rf[3].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
-            init_rf[4].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
-            init_rf[5].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
-            init_rf[6].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
-            init_rf[7].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
+            set_all_lanes(3'd0, 2'(sw), 5'd1, 32'd1);
         end
 
-        init_rf[0].set_register(3'd0, 2'd3, 5'd7, 32'd1);
-        init_rf[1].set_register(3'd0, 2'd3, 5'd7, 32'd1);
-        init_rf[2].set_register(3'd0, 2'd3, 5'd7, 32'd1);
-        init_rf[3].set_register(3'd0, 2'd3, 5'd7, 32'd1);
-        init_rf[4].set_register(3'd0, 2'd3, 5'd7, 32'd1);
-        init_rf[5].set_register(3'd0, 2'd3, 5'd7, 32'd1);
-        init_rf[6].set_register(3'd0, 2'd3, 5'd7, 32'd1);
-        init_rf[7].set_register(3'd0, 2'd3, 5'd7, 32'd1);
+        set_all_lanes(3'd0, 2'd3, 5'd7, 32'd1);
 
         load_instruction(32'h00, encode_branch(BNE, 5'd1, 5'd0, 10'h00C, 6'h24));
         load_instruction(32'h04, encode_i(ADDI, 5'd0, 5'd2, 16'd22));
@@ -429,15 +413,7 @@ module final_integration_tb;
         reset();
         mig_mem.delete();
 
-        // Clear all register files
-        init_rf[0].initialize();
-        init_rf[1].initialize();
-        init_rf[2].initialize();
-        init_rf[3].initialize();
-        init_rf[4].initialize();
-        init_rf[5].initialize();
-        init_rf[6].initialize();
-        init_rf[7].initialize();
+        initialize_all_lanes();
 
         /*
             Kernel:
@@ -514,14 +490,7 @@ module final_integration_tb;
         reset();
         mig_mem.delete();
 
-        init_rf[0].initialize();
-        init_rf[1].initialize();
-        init_rf[2].initialize();
-        init_rf[3].initialize();
-        init_rf[4].initialize();
-        init_rf[5].initialize();
-        init_rf[6].initialize();
-        init_rf[7].initialize();
+        initialize_all_lanes();
 
         /*
             LOAD  R4, [R1]       // Cache miss
@@ -544,7 +513,7 @@ module final_integration_tb;
         for (int sw = 0; sw < 4; ++sw) begin
             set_all_lanes(0, 2'(sw), 1, 32'h1000 + sw*128);
             set_all_lanes(0, 2'(sw), 2, 32'h2000 + sw*128);
-            set_all_lanes(0, 2'(sw), 5, 32'hCAFE_0000 + sw);
+            set_all_lanes(0, 2'(sw), 5, 32'hABCD_1234 + sw);
         end
 
         launch_kernel(4'd1);
@@ -553,13 +522,13 @@ module final_integration_tb;
         // Verify register writebacks
         for (int sw = 0; sw < 4; ++sw) begin
             check_all_lanes(0, 2'(sw), 4, (32'h1000 + sw*128) ^ K);
-            check_all_lanes(0, 2'(sw), 6, 32'hCAFE_0000 + sw);
-            check_all_lanes(0, 2'(sw), 7, 32'hCAFE_0000 + sw);
+            check_all_lanes(0, 2'(sw), 6, 32'hABCD_1234 + sw);
+            check_all_lanes(0, 2'(sw), 7, 32'hABCD_1234 + sw);
         end
 
         // Verify dirty lines were written back during kernel flush
         for (int sw = 0; sw < 4; ++sw) begin
-            addr1 = 32'h1004 + sw*128;
+            addr1 = 32'h1000 + sw*128;
             addr2 = 32'h2000 + sw*128;
 
             beat1 = addr1[26:4];
@@ -568,10 +537,10 @@ module final_integration_tb;
             assert (mig_mem.exists(beat1) && mig_mem.exists(beat2))
                 else $fatal(1, "TEST 5: Missing dirty-line writeback");
 
-            assert (mig_mem[beat1][32*addr1[3:2] +: 32] === (32'hCAFE_0000 + sw))
+            assert (mig_mem[beat1][32*addr1[3:2] +: 32] === (32'hABCD_1234 + sw))
                 else $fatal(1, "TEST 5: STORE hit writeback failed");
 
-            assert (mig_mem[beat2][32*addr2[3:2] +: 32] === (32'hCAFE_0000 + sw))
+            assert (mig_mem[beat2][32*addr2[3:2] +: 32] === (32'hABCD_1234 + sw))
                 else $fatal(1, "TEST 5: STORE miss writeback failed");
         end
 
