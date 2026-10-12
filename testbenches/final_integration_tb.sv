@@ -156,8 +156,8 @@ module final_integration_tb;
     function automatic logic [31:0] encode_branch(
         input logic [5:0] opcode,
         input logic [4:0] src1, src2,
-        input logic [9:0] target_offset,
-        input logic [5:0] reconv_offset
+        input logic [6:0] target_offset,
+        input logic [8:0] reconv_offset
     );
         return {opcode, src1, src2, target_offset, reconv_offset};
     endfunction
@@ -318,14 +318,28 @@ module final_integration_tb;
         $display("\nTEST 3: Single-warp branch divergence");
         
         /*
-        0x00: BNE  r1, r0, target=0x10, reconverge=0x18
+        0x00: BNE  r1, r0, target_offset=0x0C, reconverge_offset=0x24
+
+        // not-taken branch
         0x04: ADDI r2, r0, 22
-        0x08: ADDI r3, r0, 33
-        0x0C: BEQ  r0, r0, target=0x18  // Unconditional branch
-        0x10: ADDI r4, r0, 44
-        0x14: ADDI r5, r0, 55
-        0x18: ADDI r6, r0, 66
-        0x1C: DONE
+        0x08: BEQ  r0, r0, target_offset=0x1C, reconverge_offset==0x1C // Unconditional branch to 0x24
+        
+        // taken branch
+        0x0C: BNE R7, R0, target_offset=0x0C, reconverge_offset=0x14,  // reconverge at 0x20
+
+        // inner not-taken branch
+        0x10: ADDI r3, r0, 33
+        0x14: BEQ R0, R0, target_offset=0x0C, reconverge_offset=0x0C
+
+        // inner taken branch
+        0x18: ADDI r4, r0, 44
+        0x1C: ADDI r5, r0, 55
+
+        // inner reconervgence
+        0x20: ADDI r6, r0, 66
+
+        // outer reconvergence
+        0x24: DONE
         */
 
         reset();
@@ -351,34 +365,39 @@ module final_integration_tb;
             init_rf[7].set_register(3'd0, 2'(sw), 5'd1, 32'd1);
         end
 
-        load_instruction(32'h00, encode_branch(BNE, 5'd1, 5'd0, 10'd16, 6'd24));
-        load_instruction(32'h04, encode_i(ADDI, 5'd0, 5'd2, 16'd22));
-        load_instruction(32'h08, encode_i(ADDI, 5'd0, 5'd3, 16'd33));
-        load_instruction(32'h0C, encode_branch(BEQ, 5'd0, 5'd0, 10'd12, 6'd12));
-        load_instruction(32'h10, encode_i(ADDI, 5'd0, 5'd4, 16'd44));
-        load_instruction(32'h14, encode_i(ADDI, 5'd0, 5'd5, 16'd55));
-        load_instruction(32'h18, encode_i(ADDI, 5'd0, 5'd6, 16'd66));
-        load_instruction(32'h1C, DONE_INSTR);
+        init_rf[0].set_register(3'd0, 2'd3, 5'd7, 32'd1);
+        init_rf[1].set_register(3'd0, 2'd3, 5'd7, 32'd1);
+        init_rf[2].set_register(3'd0, 2'd3, 5'd7, 32'd1);
+        init_rf[3].set_register(3'd0, 2'd3, 5'd7, 32'd1);
+        init_rf[4].set_register(3'd0, 2'd3, 5'd7, 32'd1);
+        init_rf[5].set_register(3'd0, 2'd3, 5'd7, 32'd1);
+        init_rf[6].set_register(3'd0, 2'd3, 5'd7, 32'd1);
+        init_rf[7].set_register(3'd0, 2'd3, 5'd7, 32'd1);
 
-        // Launch one warp and wait for completion using your existing tasks.
+        load_instruction(32'h00, encode_branch(BNE, 5'd1, 5'd0, 10'h00C, 6'h24));
+        load_instruction(32'h04, encode_i(ADDI, 5'd0, 5'd2, 16'd22));
+        load_instruction(32'h08, encode_branch(BEQ, 5'd0, 5'd0, 10'h01C, 6'h1C));
+        load_instruction(32'h0C, encode_branch(BNE, 5'd7, 5'd0, 10'h00C, 6'h14));
+        load_instruction(32'h10, encode_i(ADDI, 5'd0, 5'd3, 16'd33));
+        load_instruction(32'h14, encode_branch(BEQ, 5'd0, 5'd0, 10'h00C, 6'h0C));
+        load_instruction(32'h18, encode_i(ADDI, 5'd0, 5'd4, 16'd44));
+        load_instruction(32'h1C, encode_i(ADDI, 5'd0, 5'd5, 16'd55));
+        load_instruction(32'h20, encode_i(ADDI, 5'd0, 5'd6, 16'd66));
+        load_instruction(32'h24, encode_i(ADDI, 5'd0, 5'd8, 16'd88));
+        load_instruction(32'h28, DONE_INSTR);
+
+        // Launch one warp and wait for completion
         launch_kernel(4'd1);
         wait_for_kernel_done(50000);
 
         // Verify branch execution results
         for (int sw = 0; sw < 4; sw++) begin
-            // R1: Branch condition
-            check_all_lanes(3'd0, 2'(sw), 5'd1, (sw < 2) ? 32'd0 : 32'd1);
-
-            // Not-taken path: threads 0-15
-            check_all_lanes(3'd0, 2'(sw), 5'd2, (sw < 2) ? 32'd22 : 32'd0);
-            check_all_lanes(3'd0, 2'(sw), 5'd3, (sw < 2) ? 32'd33 : 32'd0);
-
-            // Taken path: threads 16-31
-            check_all_lanes(3'd0, 2'(sw), 5'd4, (sw >= 2) ? 32'd44 : 32'd0);
-            check_all_lanes(3'd0, 2'(sw), 5'd5, (sw >= 2) ? 32'd55 : 32'd0);
-
-            // Reconvergence: all 32 threads
-            check_all_lanes(3'd0, 2'(sw), 5'd6, 32'd66);
+            check_all_lanes(0, sw, 2, (sw < 2) ? 22 : 0);
+            check_all_lanes(0, sw, 3, (sw == 2) ? 33 : 0);
+            check_all_lanes(0, sw, 4, (sw == 3) ? 44 : 0);
+            check_all_lanes(0, sw, 5, (sw == 3) ? 55 : 0);
+            check_all_lanes(0, sw, 6, (sw >= 2) ? 66 : 0);
+            check_all_lanes(0, sw, 8, 88);
         end
 
         $display("TEST 3: Single-warp branch divergence PASSED");

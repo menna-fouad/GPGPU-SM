@@ -13,7 +13,7 @@ module mask_split_unit #(
     input logic [7:0] branch_taken_bits, // 1 bit per lane (8 total)
     // Info for calculating reconvergence PC
     input logic [31:0] branch_pc,
-    input logic [5:0] push2_pc_recon_offset,
+    input logic [8:0] push2_pc_recon_offset,
     input logic [31:0] pc_taken,
 
     // used to identify which warp is currently executing
@@ -65,7 +65,7 @@ module mask_split_unit #(
         end else if (!buffer_full) begin
             push2_pc_taken <= pc_taken;
             push2_pc_fallthrough <= branch_pc + 32'd4;
-            push2_recon_pc <= branch_pc + {{26{push2_pc_recon_offset[5]}}, push2_pc_recon_offset};
+            push2_recon_pc <= branch_pc + {{23{push2_pc_recon_offset[8]}}, push2_pc_recon_offset};
         end
     end
 

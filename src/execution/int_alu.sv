@@ -30,7 +30,7 @@ module int_alu (
     output logic is_load,
     output logic is_store,
     output logic [31:0] branch_pc_out,
-    output logic [5:0] push2_pc_recon_offset,
+    output logic [8:0] push2_pc_recon_offset,
     output logic [31:0] src2_out // for store instruction
 );
     // Define parameters for instruction types
@@ -81,7 +81,7 @@ module int_alu (
                 endcase
 
                 BRANCH : begin
-                    result <= instr_pc + {{22{offset[15]}}, offset[15:6]};
+                    result <= instr_pc + {{25{offset[15]}}, offset[15:9]};
                     case (opcode[2:0])
                         BEQ : branch_taken <= (src1 == src2);
                         BNE : branch_taken <= (src1 != src2);
@@ -105,7 +105,7 @@ module int_alu (
             is_store <= 1'b0;
             valid_out <= 1'b0;
             branch_pc_out <= 32'b0;
-            push2_pc_recon_offset <= 6'b0;
+            push2_pc_recon_offset <= 9'b0;
             src2_out <= 32'b0;
             reg_bank_addr_out <= 10'b0;
         end else if (!buffer_full) begin
@@ -116,7 +116,7 @@ module int_alu (
             is_store <= (opcode == {I_TYPE, STORE});
             valid_out <= valid_in;
             branch_pc_out <= instr_pc;
-            push2_pc_recon_offset <= offset[5:0];
+            push2_pc_recon_offset <= offset[8:0];
             src2_out <= src2;
             reg_bank_addr_out <= reg_bank_addr_in;
         end
