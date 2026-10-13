@@ -266,15 +266,63 @@ module final_integration_tb;
         input logic [4:0] reg_num,
         input logic [31:0] expected
     );
-        check_rf[0].check_register(warp, sw, reg_num, expected);
-        check_rf[1].check_register(warp, sw, reg_num, expected);
-        check_rf[2].check_register(warp, sw, reg_num, expected);
-        check_rf[3].check_register(warp, sw, reg_num, expected);
-        check_rf[4].check_register(warp, sw, reg_num, expected);
-        check_rf[5].check_register(warp, sw, reg_num, expected);
-        check_rf[6].check_register(warp, sw, reg_num, expected);
-        check_rf[7].check_register(warp, sw, reg_num, expected);
+        init_rf[0].check_register(warp, sw, reg_num, expected);
+        init_rf[1].check_register(warp, sw, reg_num, expected);
+        init_rf[2].check_register(warp, sw, reg_num, expected);
+        init_rf[3].check_register(warp, sw, reg_num, expected);
+        init_rf[4].check_register(warp, sw, reg_num, expected);
+        init_rf[5].check_register(warp, sw, reg_num, expected);
+        init_rf[6].check_register(warp, sw, reg_num, expected);
+        init_rf[7].check_register(warp, sw, reg_num, expected);
     endtask
+
+    task automatic set_lane_register(
+        input logic [2:0] lane,
+        input logic [2:0] warp,
+        input logic [1:0] sw,
+        input logic [4:0] reg_num,
+        input logic [31:0] value
+    );
+        case (lane)
+            0 : init_rf[0].set_register(warp, sw, reg_num, value);
+            1 : init_rf[1].set_register(warp, sw, reg_num, value);
+            2 : init_rf[2].set_register(warp, sw, reg_num, value);
+            3 : init_rf[3].set_register(warp, sw, reg_num, value);
+            4 : init_rf[4].set_register(warp, sw, reg_num, value);
+            5 : init_rf[5].set_register(warp, sw, reg_num, value);
+            6 : init_rf[6].set_register(warp, sw, reg_num, value);
+            7 : init_rf[7].set_register(warp, sw, reg_num, value);
+            default : $fatal(1, "Invalid lane %0d", lane);
+        endcase
+    endtask
+
+    task automatic check_lane_register(
+        input logic [2:0] lane,
+        input logic [2:0] warp,
+        input logic [1:0] sw,
+        input logic [4:0] reg_num,
+        input logic [31:0] expected
+    );
+        case (lane)
+            0 : init_rf[0].check_register(warp, sw, reg_num, expected);
+            1 : init_rf[1].check_register(warp, sw, reg_num, expected);
+            2 : init_rf[2].check_register(warp, sw, reg_num, expected);
+            3 : init_rf[3].check_register(warp, sw, reg_num, expected);
+            4 : init_rf[4].check_register(warp, sw, reg_num, expected);
+            5 : init_rf[5].check_register(warp, sw, reg_num, expected);
+            6 : init_rf[6].check_register(warp, sw, reg_num, expected);
+            7 : init_rf[7].check_register(warp, sw, reg_num, expected);
+            default : $fatal(1, "Invalid lane %0d", lane);
+        endcase
+    endtask
+
+    // TEST 6: Monitor transaction count sent to memory
+    logic count_en = 1'b0;
+    int txn_count = 0;
+    always_ff @(posedge sm_clk) begin
+        if (u_sm_top.txn_valid && count_en)
+            txn_count <= txn_count + 1;
+    end
 
     initial begin
         logic [31:0] a [0:3];
@@ -528,7 +576,7 @@ module final_integration_tb;
 
         // Verify dirty lines were written back during kernel flush
         for (int sw = 0; sw < 4; ++sw) begin
-            addr1 = 32'h1000 + sw*128;
+            addr1 = 32'h1004 + sw*128;
             addr2 = 32'h2000 + sw*128;
 
             beat1 = addr1[26:4];
@@ -545,6 +593,55 @@ module final_integration_tb;
         end
 
         $display("TEST 5: Single-warp LOAD/STORE integration PASSED");
+
+        $display("\nTEST 6: Single-warp coalesced memory access integration");
+        reset();
+        mig_mem.delete();
+        count_en = 1'b1;
+
+        initialize_all_lanes();
+
+        /*
+            LOAD  R2, [R1 + 0]
+            DONE
+        */
+
+        load_instruction('h00, encode_i(LOAD, 1, 2, 0));
+        load_instruction('h04, DONE_INSTR);
+
+        for (int lane = 0; lane < 8; ++lane) begin
+            for (int sw = 0; sw < 4; ++sw) begin
+                if (sw < 2)
+                    addr1 = 32'h1000 + 4 * (sw * 8 + lane);
+                else if (sw == 2) 
+                    addr1 = 32'h2000 + 4 * (sw * 8 + lane);
+                else
+                    addr1 = 32'h3000 + 4 * (sw * 8 + lane);
+
+                set_lane_register(lane, 2'd0, 2'(sw), 5'd1, addr1);
+            end
+        end
+
+        launch_kernel(4'd1);
+        wait_for_kernel_done(50000);
+
+        assert (txn_count === 'd3)
+            else $fatal("Invalid number of coalesced transactions");
+
+        for (int lane = 0; lane < 8; ++lane) begin
+            for (int sw = 0; sw < 4; ++sw) begin
+                if (sw < 2)
+                    addr1 = 32'h1000 + 4 * (sw * 8 + lane);
+                else if (sw == 2) 
+                    addr1 = 32'h2000 + 4 * (sw * 8 + lane);
+                else
+                    addr1 = 32'h3000 + 4 * (sw * 8 + lane);
+                
+                check_lane_register(lane, 3'd0, 2'(sw), 5'd2, addr1 ^ K);
+            end
+        end
+
+        $display("TEST 6: Single-warp coalesced memory access PASSED");
 
         $finish;
     end
