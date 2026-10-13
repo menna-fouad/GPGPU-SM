@@ -188,6 +188,26 @@ module final_integration_tb;
         mig_mem[beat] = data;
     endtask
 
+    function automatic logic [31:0] fp32_value(input int value);
+        case (value)
+            1:  return 32'h3F800000;
+            2:  return 32'h40000000;
+            3:  return 32'h40400000;
+            4:  return 32'h40800000;
+            5:  return 32'h40A00000;
+            6:  return 32'h40C00000;
+            7:  return 32'h40E00000;
+            8:  return 32'h41000000;
+            9:  return 32'h41100000;
+            10: return 32'h41200000;
+            11: return 32'h41300000;
+            12: return 32'h41400000;
+            13: return 32'h41500000;
+            14: return 32'h41600000;
+            default: $fatal(1, "Unsupported FP32 value: %0d", value);
+        endcase
+    endfunction
+
     generate
         for (genvar lane = 0; lane < 8; lane++) begin : init_rf
             task automatic initialize();
@@ -672,6 +692,130 @@ module final_integration_tb;
         end
 
         $display("TEST 7: Single-warp coalesced memory access PASSED");
+
+        $display("\nTEST 8: Multi-warp arithmetic integration test");
+        reset();
+        mig_mem.delete();
+
+        initialize_all_lanes();
+
+        /*
+            0x00 MOV_WID R1
+            0x04 MOV_TID R2
+            0x08 FMA R3, R4, R5, R6
+            0x0C MOV_BID R10
+            0x10 ADD R7, R8, R9
+            
+            // Warp-dependent branch (R11 initialized to 3)
+            0x14 BLT R1, R11, target_offset=0x10, recon_offset=0x18
+
+            // Branch not-taken (warps 3 - 7)
+            0x18 MOV_TID R12
+            0x1C ADD R13, R8, R9
+            0x20 BEQ R0, R0, target_offset=0x0C, recon_offset=0x0C
+
+            // Branch taken (warps 0 -o 2)
+            0x24 FMA R14, R4, R5, R6
+            0x28 MOV_WID R15
+
+            // reconvergence point
+            0x2C ADD R16, R8, R10
+
+            // Thread-dependent branch (R17 initialized to 16)
+            0x30 BGE R2, R17, target_offset=0x10, recon_offset=0x1C
+
+            // Branch not-taken (threads 0-15)
+            0x34 MOV_TID R18
+            0x38 SUB R19, R8, R10
+            0x3C BEQ R0, R0, target_offset=0x10, recon_offset=0x10
+
+            // Branch taken (threads 16-31)
+            0x40 FMA R20, R4, R5, R6
+            0x44 ADD R21, R8, R9
+            0x48 MOV_WID R22
+
+            // reconvergence point
+            0x4C FMA R23, R4, R5, R6
+            0x50 ADD R24, R8, R10
+            0x54 DONE
+        */
+
+        for (int w = 0; w < 8; ++w) begin
+            for (int sw = 0; sw < 4; sw++) begin
+                set_all_lanes(3'(w), 2'(sw), 5'd4, 32'h40000000); // R4 = 2.0 for all threads in all warps
+                set_all_lanes(3'(w), 2'(sw), 5'd5, 32'h40400000); // R5 = 3.0 for all threads in all warps
+                set_all_lanes(3'(w), 2'(sw), 5'd6, fp32_value(w + 1)); // R6 = warp_id + 1
+                set_all_lanes(3'(w), 2'(sw), 5'd11, 32'd3);
+                set_all_lanes(3'(w), 2'(sw), 5'd17, 32'd16);
+
+                for (int lane = 0; lane < 8; ++lane) begin
+                    int t;
+                    t = sw * 8 + lane;
+
+                    set_lane_register(3'(lane), 3'(w), 2'(sw), 5'd8, 32'(100 + 10*w + t));
+                    set_lane_register(3'(lane), 3'(w), 2'(sw), 5'd9, 32'(20 + t));
+                end
+            end
+        end
+
+        load_instruction('h00, encode_special(MOV_WID, 5'd1));
+        load_instruction('h04, encode_special(MOV_TID, 5'd2));
+        load_instruction('h08, encode_fma(5'd4, 5'd5, 5'd6, 5'd3));
+        load_instruction('h0C, encode_special(MOV_BID, 5'd10));
+        load_instruction('h10, encode_r(ADD, 5'd8, 5'd9, 5'd7));
+        load_instruction('h14, encode_branch(BLT, 5'd1, 5'd11, 7'h10, 9'h18));
+        load_instruction('h18, encode_special(MOV_TID, 5'd12));
+        load_instruction('h1C, encode_r(ADD, 5'd8, 5'd9, 5'd13));
+        load_instruction('h20, encode_branch(BEQ, 5'd0, 5'd0, 7'h0C, 9'h0C));
+        load_instruction('h24, encode_fma(5'd4, 5'd5, 5'd6, 5'd14));
+        load_instruction('h28, encode_special(MOV_WID, 5'd15));
+        load_instruction('h2C, encode_r(ADD, 5'd8, 5'd10, 5'd16));
+        load_instruction('h30, encode_branch(BGE, 5'd2, 5'd17, 7'h10, 9'h1C));
+        load_instruction('h34, encode_special(MOV_TID, 5'd18));
+        load_instruction('h38, encode_r(SUB, 5'd8, 5'd10, 5'd19));
+        load_instruction('h3C, encode_branch(BEQ, 5'd0, 5'd0, 7'h10, 9'h10));
+        load_instruction('h40, encode_fma(5'd4, 5'd5, 5'd6, 5'd20));
+        load_instruction('h44, encode_r(ADD, 5'd8, 5'd9, 5'd21));
+        load_instruction('h48, encode_special(MOV_WID, 5'd22));
+        load_instruction('h4C, encode_fma(5'd4, 5'd5, 5'd6, 5'd23));
+        load_instruction('h50, encode_r(ADD, 5'd8, 5'd10, 5'd24));
+        load_instruction('h54, DONE_INSTR);
+
+        check_lane_register(3'd0, 3'd0, 2'd0, 5'd4, 32'h40000000);
+        check_lane_register(3'd0, 3'd0, 2'd0, 5'd5, 32'h40400000);
+        check_lane_register(3'd0, 3'd0, 2'd0, 5'd6, 32'h3F800000);
+
+        launch_kernel(4'd8);
+        wait_for_kernel_done(50000);
+
+        for (int w = 0; w < 8; ++w) begin
+            for (int sw = 0; sw < 4; sw++) begin
+                check_all_lanes(3'(w), 2'(sw), 5'd1, w);
+                check_all_lanes(3'(w), 2'(sw), 5'd3, fp32_value(w + 7));
+                check_all_lanes(3'(w), 2'(sw), 5'd10, w >> 2);
+                check_all_lanes(3'(w), 2'(sw), 5'd14, (w < 3 ? fp32_value(w + 7) : 0));
+                check_all_lanes(3'(w), 2'(sw), 5'd15, (w < 3 ? w : 0));
+                check_all_lanes(3'(w), 2'(sw), 5'd23, fp32_value(w + 7));
+
+                for (int lane = 0; lane < 8; ++lane) begin
+                    int t;
+                    t = sw * 8 + lane;
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd2, t);
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd7, 120 + 10 * w + 2 * t);
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd12, (w < 3 ? 0 : t));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd13, (w < 3 ? 0 : 120 + 10 * w + 2 * t));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd16, 100 + 10 * w + t + (w >> 2));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd18, (t >= 16 ? 0 : t));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd19, (t >= 16 ? 0 : 100 + 10 * w + t - (w >> 2)));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd20, (t >= 16 ? fp32_value(w + 7) : 0));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd21, (t >= 16 ? 120 + 10 * w + 2 * t : 0));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd22, (t >= 16 ? w : 0));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd24, 100 + 10 * w + t + (w >> 2));
+                end
+            end
+        end
+
+        $display("TEST 8: Multi-warp arithmetic integration test PASSED");
 
         $finish;
     end
