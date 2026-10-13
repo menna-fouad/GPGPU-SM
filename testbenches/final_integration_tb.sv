@@ -534,7 +534,37 @@ module final_integration_tb;
 
         $display("TEST 4: Single-warp FP32 FMA integration PASSED");
 
-        $display("\nTEST 5: Single-warp LOAD/STORE integration");
+        $display("\nTEST 5: Multi-warp Special register integration");
+
+        reset();
+        initialize_all_lanes();
+
+        load_instruction('h00, encode_special(MOV_TID, 5'd3));
+        load_instruction('h04, encode_special(MOV_WID, 5'd4));
+        load_instruction('h08, encode_special(MOV_BID, 5'd5));
+        load_instruction('h0C, DONE_INSTR);
+
+        launch_kernel(4'd5);
+        wait_for_kernel_done(50000);
+
+        for (int warp = 0; warp < 5; ++warp) begin
+            for (int sw = 0; sw < 4; ++sw) begin
+                for (int lane = 0; lane < 8; ++lane) begin
+                    // Thread ID -> R3
+                    check_lane_register(lane, 3'(warp), 2'(sw), 5'd3, 32'(sw*8 + lane));
+
+                    // Warp ID -> R4
+                    check_lane_register(lane, 3'(warp), 2'(sw), 5'd4, 32'(warp));
+
+                    // Block ID -> R5
+                    check_lane_register(lane, 3'(warp), 2'(sw), 5'd5, 32'(warp >> 2));
+                end
+            end
+        end
+
+        $display("TEST 5: Multi-warp Special register integration PASSED");
+
+        $display("\nTEST 6: Single-warp LOAD/STORE integration");
         reset();
         mig_mem.delete();
 
@@ -583,18 +613,18 @@ module final_integration_tb;
             beat2 = addr2[26:4];
 
             assert (mig_mem.exists(beat1) && mig_mem.exists(beat2))
-                else $fatal(1, "TEST 5: Missing dirty-line writeback");
+                else $fatal(1, "TEST 6: Missing dirty-line writeback");
 
             assert (mig_mem[beat1][32*addr1[3:2] +: 32] === (32'hABCD_1234 + sw))
-                else $fatal(1, "TEST 5: STORE hit writeback failed");
+                else $fatal(1, "TEST 6: STORE hit writeback failed");
 
             assert (mig_mem[beat2][32*addr2[3:2] +: 32] === (32'hABCD_1234 + sw))
-                else $fatal(1, "TEST 5: STORE miss writeback failed");
+                else $fatal(1, "TEST 6: STORE miss writeback failed");
         end
 
-        $display("TEST 5: Single-warp LOAD/STORE integration PASSED");
+        $display("TEST 6: Single-warp LOAD/STORE integration PASSED");
 
-        $display("\nTEST 6: Single-warp coalesced memory access integration");
+        $display("\nTEST 7: Single-warp coalesced memory access integration");
         reset();
         mig_mem.delete();
         count_en = 1'b1;
@@ -641,7 +671,7 @@ module final_integration_tb;
             end
         end
 
-        $display("TEST 6: Single-warp coalesced memory access PASSED");
+        $display("TEST 7: Single-warp coalesced memory access PASSED");
 
         $finish;
     end
