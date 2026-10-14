@@ -159,8 +159,8 @@ module final_integration_tb;
     function automatic logic [31:0] encode_branch(
         input logic [5:0] opcode,
         input logic [4:0] src1, src2,
-        input logic [6:0] target_offset,
-        input logic [8:0] reconv_offset
+        input logic [7:0] target_offset,
+        input logic [7:0] reconv_offset
     );
         return {opcode, src1, src2, target_offset, reconv_offset};
     endfunction
@@ -462,6 +462,162 @@ module final_integration_tb;
         end
     end
 
+    function automatic int test10_expected_count(
+        input int t,
+        input int r
+    );
+        case (r)
+            1, 2, 3, 4, 21, 22: return 1;
+            5: return (t % 2 != 0) ? 1 :
+                      (t % 4 == 2) ? 2 : 3;
+
+            6: return (t % 2 != 0) ? 0 :
+                      (t % 4 == 2) ? 2 : 1;
+
+            16: return (t % 8 == 0) ? 1 : 0;
+            17: return (t % 4 == 2 || t % 8 == 0) ? 1 : 0;
+            18: return (t % 4 == 0) ? 1 : 0;
+            19, 20: return (t % 2 == 0) ? 1 : 0;
+
+            default: return 0;
+        endcase
+    endfunction
+
+    function automatic logic [31:0] test10_expected_value(
+        input int w,
+        input int t,
+        input int r,
+        input int n
+    );
+        logic [31:0] sum;
+        logic [31:0] addr;
+        logic [31:0] initial_val;
+        logic [31:0] final_val;
+        logic [31:0] square;
+        logic [31:0] product;
+
+        sum = 32'(w + t);
+
+        addr = 32'h1000 + 32'(128 * w) + 32'(4 * t);
+        initial_val = addr ^ K;
+
+        square = sum * sum;
+        product = 32'(t) * sum;
+
+        final_val = (t % 2 == 0) ? square : initial_val;
+
+        case (r)
+            1: return 32'(w);
+            2: return 32'(t);
+            3: return sum;
+            4: return initial_val;
+
+            5: begin
+                case (n)
+                    0: return 32'(t % 2);
+                    1: return 32'(t % 4);
+                    2: return 32'(t % 8);
+                    default: return 'x;
+                endcase
+            end
+
+            6: begin
+                case (n)
+                    0: return square;
+                    1: return product;
+                    default: return 'x;
+                endcase
+            end
+
+            16: return 32'h40E00000;
+            17: return (t % 4 == 2) ? product : square;
+            18: return square + 32'd1;
+            19: return square;
+            20: return square + sum;
+            21: return final_val;
+            22: return final_val + sum;
+
+            default: return 'x;
+        endcase
+    endfunction
+
+    task automatic test10_check_write_counts();
+        int expected_count;
+        int total_writes;
+
+        total_writes = 0;
+
+        for (int w = 0; w < 8; ++w) begin
+            for (int t = 0; t < 32; ++t) begin
+                for (int r = 0; r < 32; ++r) begin
+                    expected_count = test10_expected_count(t, r);
+
+                    assert (test10_write_count[w][t][r] == expected_count)
+                        else $fatal(1,
+                            "TEST 10: Missing writeback: warp=%0d thread=%0d R%0d actual_count=%0d expected_count=%0d",
+                            w, t, r,
+                            test10_write_count[w][t][r],
+                            expected_count
+                        );
+
+                    total_writes += test10_write_count[w][t][r];
+                end
+            end
+        end
+
+        assert (total_writes == 2624)
+            else $fatal(1,
+                "TEST 10: Incorrect total writeback count: actual=%0d expected=2624",
+                total_writes
+            );
+    endtask
+
+    bit test10_reg_monitor_en = 0;
+
+    //                    [warp][thread][register]
+    int test10_write_count [0:7][0:31][0:31];
+
+    always @(posedge sm_clk) begin
+        if (test10_reg_monitor_en && !sm_reset) begin
+            for (int lane = 0; lane < 8; ++lane) begin
+                if (u_sm_top.wb_rf_write_enable[lane]) begin
+                    int w, t, r, n;
+                    int expected_count;
+                    logic [31:0] expected_data;
+                    logic [31:0] actual_data;
+
+                    w = int'(u_sm_top.wb_rf_write_addr_arr[lane][9:7]);
+                    t = 8 * int'(u_sm_top.wb_rf_write_addr_arr[lane][6:5]) + lane;
+                    r = int'(u_sm_top.wb_rf_write_addr_arr[lane][4:0]);
+
+                    n = test10_write_count[w][t][r];
+
+                    expected_count = test10_expected_count(t, r);
+
+                    // Reject unexpected or duplicate writes.
+                    assert (n < expected_count)
+                        else $fatal(1,
+                            "TEST 10: Unexpected write: warp=%0d thread=%0d R%0d write_index=%0d expected_count=%0d",
+                            w, t, r, n, expected_count
+                        );
+
+                    expected_data = test10_expected_value(w, t, r, n);
+                    actual_data = u_sm_top.wb_rf_write_data[lane];
+
+                    // Verify writeback data.
+                    assert (actual_data === expected_data)
+                        else $fatal(1,
+                            "TEST 10: Incorrect writeback: warp=%0d thread=%0d R%0d write_index=%0d actual=%h expected=%h",
+                            w, t, r, n, actual_data, expected_data
+                        );
+
+                    // Count only successfully verified writes.
+                    test10_write_count[w][t][r] = n + 1;
+                end
+            end
+        end
+    end
+
     initial begin
         logic [31:0] a [0:3];
         logic [31:0] b [0:3];
@@ -567,12 +723,12 @@ module final_integration_tb;
 
         set_all_lanes(3'd0, 2'd3, 5'd7, 32'd1);
 
-        load_instruction(32'h00, encode_branch(BNE, 5'd1, 5'd0, 10'h00C, 6'h24));
+        load_instruction(32'h00, encode_branch(BNE, 5'd1, 5'd0, 8'h0C, 8'h24));
         load_instruction(32'h04, encode_i(ADDI, 5'd0, 5'd2, 16'd22));
-        load_instruction(32'h08, encode_branch(BEQ, 5'd0, 5'd0, 10'h01C, 6'h1C));
-        load_instruction(32'h0C, encode_branch(BNE, 5'd7, 5'd0, 10'h00C, 6'h14));
+        load_instruction(32'h08, encode_branch(BEQ, 5'd0, 5'd0, 8'h1C, 8'h1C));
+        load_instruction(32'h0C, encode_branch(BNE, 5'd7, 5'd0, 8'h0C, 8'h14));
         load_instruction(32'h10, encode_i(ADDI, 5'd0, 5'd3, 16'd33));
-        load_instruction(32'h14, encode_branch(BEQ, 5'd0, 5'd0, 10'h00C, 6'h0C));
+        load_instruction(32'h14, encode_branch(BEQ, 5'd0, 5'd0, 8'h0C, 8'h0C));
         load_instruction(32'h18, encode_i(ADDI, 5'd0, 5'd4, 16'd44));
         load_instruction(32'h1C, encode_i(ADDI, 5'd0, 5'd5, 16'd55));
         load_instruction(32'h20, encode_i(ADDI, 5'd0, 5'd6, 16'd66));
@@ -881,17 +1037,17 @@ module final_integration_tb;
         load_instruction('h08, encode_fma(5'd4, 5'd5, 5'd6, 5'd3));
         load_instruction('h0C, encode_special(MOV_BID, 5'd10));
         load_instruction('h10, encode_r(ADD, 5'd8, 5'd9, 5'd7));
-        load_instruction('h14, encode_branch(BLT, 5'd1, 5'd11, 7'h10, 9'h18));
+        load_instruction('h14, encode_branch(BLT, 5'd1, 5'd11, 8'h10, 8'h18));
         load_instruction('h18, encode_special(MOV_TID, 5'd12));
         load_instruction('h1C, encode_r(ADD, 5'd8, 5'd9, 5'd13));
-        load_instruction('h20, encode_branch(BEQ, 5'd0, 5'd0, 7'h0C, 9'h0C));
+        load_instruction('h20, encode_branch(BEQ, 5'd0, 5'd0, 8'h0C, 8'h0C));
         load_instruction('h24, encode_fma(5'd4, 5'd5, 5'd6, 5'd14));
         load_instruction('h28, encode_special(MOV_WID, 5'd15));
         load_instruction('h2C, encode_r(ADD, 5'd8, 5'd10, 5'd16));
-        load_instruction('h30, encode_branch(BGE, 5'd2, 5'd17, 7'h10, 9'h1C));
+        load_instruction('h30, encode_branch(BGE, 5'd2, 5'd17, 8'h10, 8'h1C));
         load_instruction('h34, encode_special(MOV_TID, 5'd18));
         load_instruction('h38, encode_r(SUB, 5'd8, 5'd10, 5'd19));
-        load_instruction('h3C, encode_branch(BEQ, 5'd0, 5'd0, 7'h10, 9'h10));
+        load_instruction('h3C, encode_branch(BEQ, 5'd0, 5'd0, 8'h10, 8'h10));
         load_instruction('h40, encode_fma(5'd4, 5'd5, 5'd6, 5'd20));
         load_instruction('h44, encode_r(ADD, 5'd8, 5'd9, 5'd21));
         load_instruction('h48, encode_special(MOV_WID, 5'd22));
@@ -967,11 +1123,11 @@ module final_integration_tb;
         load_instruction('h08, encode_r(ADD, 5'd1, 5'd2, 5'd3));
         load_instruction('h0C, encode_i(ADDI, 5'd0, 5'd4, 16'd2));
         load_instruction('h10, encode_i(ANDI, 5'd2, 5'd5, 16'd3));
-        load_instruction('h14, encode_branch(BLT, 5'd5, 5'd4, 7'h14, 9'h20));
+        load_instruction('h14, encode_branch(BLT, 5'd5, 5'd4, 8'h14, 8'h20));
         load_instruction('h18, encode_i(ADDI, 5'd3, 5'd6, 16'd20));
         load_instruction('h1C, encode_i(STORE, 5'd7, 5'd6, 16'd0));
         load_instruction('h20, encode_i(LOAD, 5'd7, 5'd8, 16'd0));
-        load_instruction('h24, encode_branch(BEQ, 5'd0, 5'd0, 7'h10, 9'h10));
+        load_instruction('h24, encode_branch(BEQ, 5'd0, 5'd0, 8'h10, 8'h10));
         load_instruction('h28, encode_i(ADDI, 5'd3, 5'd6, 16'd10));
         load_instruction('h2C, encode_i(STORE, 5'd7, 5'd6, 16'd0));
         load_instruction('h30, encode_i(LOAD, 5'd7, 5'd8, 16'd0));
@@ -1034,14 +1190,141 @@ module final_integration_tb;
                 expected_data = w + t + (t % 4 < 2 ? 10 : 20);
 
                 assert (mig_mem.exists(beat))
-                    else $fatal(1, "TEST 6: Missing dirty-line writeback");
+                    else $fatal(1, "TEST 9: Missing dirty-line writeback");
 
                 assert (mig_mem[beat][32*addr[3:2] +: 32] === (expected_data))
-                    else $fatal(1, "TEST 6: STORE hit writeback failed");
+                    else $fatal(1, "TEST 9: STORE hit writeback failed");
             end
         end
 
         $display("TEST 9: Multi-warp memory integration test PASSED");
+
+        $display("\nTEST 10: Multi-warp FULL SYSTEM integration test");
+        reset();
+        mig_mem.delete();
+        initialize_all_lanes();
+
+        /*
+            0x00 MOV_WID R1                 R1 = warp_id
+            0x04 MOV_TID R2                 R2 = thread_id
+            0x08 ADD R3, R1, R2             R3 = w + t
+            0x0C LOAD R4, [R7]              // Input from A
+
+            0x10 ANDI R5, R2, 1             R5 = t % 2
+            0x14 BNE R5, R0                 // Odd threads skip outer IF
+            target_offset = recon_offset = 0x54
+
+            // outer not-taken branch (if t % 2 == 0)
+            0x18 MUL R6, R3, R3             R6 = (w + t)^2
+            0x1C STORE R6, [R7]             A becomes dirty
+
+            0x20 ANDI R5, R2, 3             R5 = t % 4
+            0x24 BNE R5, R0                 skip middle IF when t % 4 != 0
+            target_offset = 0x30, recon_offset = 0x3C
+
+            // middle not-taken branch (t % 4 == 0)
+            0x28 STORE R6, [R8]             B
+            0x2C STORE R6, [R9]             C
+            0x30 STORE R6, [R10]            D
+
+            0x34 ANDI R5, R2, 7             R5 = R2 % 8
+            0x38 BNE R5, R0                 t % 8 != 0
+            target_offset = recon_offset = 0x14
+
+            // inner not-taken branch (if t % 8 == 0)
+            0x3C  FMA R16, R13, R14, R15
+            0x40  STORE R16, [R11]          E, force replacement
+            0x44  LOAD R17, [R7]            Reload A
+            0x48  STORE R17, [R12]          F
+
+            // inner reconvergence point
+            0x4C  ADDI R18, R6, 1           R18 = R6 + 1
+            0x50  BEQ R0, R0                Skip ELSE
+            target_offset = recon_offset = 0x10
+
+            // middle taken branch (t % 4 != 0)
+            0x54  MUL R6, R2, R3            R6 = t(w + t)
+            0x58  STORE R6, [R8]            
+            0x5C  LOAD R17, [R8]
+
+            // middle reconvergence point
+            0x60  LOAD R19, [R7]
+            0x64  ADD R20, R19, R3
+
+            // outer reconvergence point
+            0x68  LOAD R21, [R7]
+            0x6C  ADD R22, R21, R3
+            0x70  STORE R22, [R12]
+            0x74  DONE
+        */
+
+        load_instruction('h00, encode_special(MOV_WID, 5'd1));
+        load_instruction('h04, encode_special(MOV_TID, 5'd2));
+        load_instruction('h08, encode_r(ADD, 5'd1, 5'd2, 5'd3));
+        load_instruction('h0C, encode_i(LOAD, 5'd7, 5'd4, 16'd0));
+        load_instruction('h10, encode_i(ANDI, 5'd2, 5'd5, 16'd1));
+        load_instruction('h14, encode_branch(BNE, 5'd5, 5'd0, 8'h54, 8'h54));
+        load_instruction('h18, encode_r(MUL, 5'd3, 5'd3, 5'd6));
+        load_instruction('h1C, encode_i(STORE, 5'd7, 5'd6, 16'd0));
+        load_instruction('h20, encode_i(ANDI, 5'd2, 5'd5, 16'd3));
+        load_instruction('h24, encode_branch(BNE, 5'd5, 5'd0, 8'h30, 8'h3C));
+        load_instruction('h28, encode_i(STORE, 5'd8, 5'd6, 16'd0));
+        load_instruction('h2C, encode_i(STORE, 5'd9, 5'd6, 16'd0));
+        load_instruction('h30, encode_i(STORE, 5'd10, 5'd6, 16'd0));
+        load_instruction('h34, encode_i(ANDI, 5'd2, 5'd5, 16'd7));
+        load_instruction('h38, encode_branch(BNE, 5'd5, 5'd0, 8'h14, 8'h14));
+        load_instruction('h3C, encode_fma(5'd13, 5'd14, 5'd15, 5'd16));
+        load_instruction('h40, encode_i(STORE, 5'd11, 5'd16, 16'd0));
+        load_instruction('h44, encode_i(LOAD, 5'd7, 5'd17, 16'd0));
+        load_instruction('h48, encode_i(STORE, 5'd12, 5'd17, 16'd0));
+        load_instruction('h4C, encode_i(ADDI, 5'd6, 5'd18, 16'd1));
+        load_instruction('h50, encode_branch(BEQ, 5'd0, 5'd0, 8'h10, 8'h10));
+        load_instruction('h54, encode_r(MUL, 5'd2, 5'd3, 5'd6));
+        load_instruction('h58, encode_i(STORE, 5'd8, 5'd6, 16'd0));
+        load_instruction('h5C, encode_i(LOAD, 5'd8, 5'd17, 16'd0));
+        load_instruction('h60, encode_i(LOAD, 5'd7, 5'd19, 16'd0));
+        load_instruction('h64, encode_r(ADD, 5'd19, 5'd3, 5'd20));
+        load_instruction('h68, encode_i(LOAD, 5'd7, 5'd21, 16'd0));
+        load_instruction('h6C, encode_r(ADD, 5'd21, 5'd3, 5'd22));
+        load_instruction('h70, encode_i(STORE, 5'd12, 5'd22, 16'd0));
+        load_instruction('h74, DONE_INSTR);
+
+        for (int w = 0; w < 8; ++w) begin
+            for (int sw = 0; sw < 4; ++sw) begin
+                for (int lane = 0; lane < 8; ++lane) begin
+                    int t;
+                    logic [31:0] base_addr;
+
+                    t = sw * 8 + lane;
+                    base_addr = 32'h1000 + 128*w + 4*t;
+
+                    // Memory addresses
+                    for (int k = 0; k < 6; ++k)
+                        set_lane_register(lane, 3'(w), 2'(sw), 5'(7+k), base_addr + 32'h800*k);
+
+                    // FP32 operands
+                    set_lane_register(lane, 3'(w), 2'(sw), 5'd13, 32'h40000000);
+                    set_lane_register(lane, 3'(w), 2'(sw), 5'd14, 32'h40400000);
+                    set_lane_register(lane, 3'(w), 2'(sw), 5'd15, 32'h3F800000);
+                end
+            end
+        end
+
+        for (int w = 0; w < 8; ++w)
+            for (int t = 0; t < 32; ++t)
+                for (int r = 0; r < 32; ++r)
+                    test10_write_count[w][t][r] = 0;
+
+        test10_reg_monitor_en = 1'b1;
+
+        launch_kernel(4'd8);
+        wait_for_kernel_done(50000);
+
+        test10_reg_monitor_en = 1'b0;
+
+        test10_check_write_counts();
+
+        $display("TEST 10: Multi-warp FULL SYSTEM integration test PASSED");
 
         $finish;
     end

@@ -234,7 +234,7 @@ module sm_top (
     logic [7:0] alu_is_branch_arr, alu_is_load_arr, alu_is_store_arr, alu_sub_warp_valid_arr;
     logic [7:0][1:0] alu_sub_warp_cycle_arr;
     logic [7:0][31:0] alu_branch_pc_arr;
-    logic [7:0][8:0] alu_recon_offset_arr;
+    logic [7:0][7:0] alu_recon_offset_arr;
     
     logic [7:0][9:0] alu_reg_bank_addr_out;
     logic [7:0][31:0] alu_src2_out;
@@ -281,7 +281,7 @@ module sm_top (
     wire [1:0] alu_sub_warp_cycle = alu_sub_warp_cycle_arr[0];
     wire [9:0] alu_reg_bank_addr = alu_reg_bank_addr_out[0];
     wire [31:0] alu_branch_pc = alu_branch_pc_arr[0];
-    wire [8:0] alu_push2_pc_recon_offset = alu_recon_offset_arr[0];
+    wire [7:0] alu_push2_pc_recon_offset = alu_recon_offset_arr[0];
 
     mask_split_unit u_mask_split (
         .clk(sm_clk),
