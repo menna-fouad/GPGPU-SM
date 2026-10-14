@@ -333,7 +333,7 @@ module sm_top (
     logic [7:0] sp_reg_valid_out;
 
     generate
-        for (gi = 0; gi < 8; ++gi) begin
+        for (gi = 0; gi < 8; ++gi) begin : gen_special_reg
             special_reg_unit #(.LANE_NUM(gi)) u_special_reg (
                 .warp_id(dec_dest_addr[9:7]),
                 .sub_warp_cycle(dec_sub_warp_cycle),
@@ -356,7 +356,7 @@ module sm_top (
     logic [7:0] wb_buffer_full_arr;
 
     generate
-        for (gi = 0; gi < 8; ++gi) begin
+        for (gi = 0; gi < 8; ++gi) begin : gen_wb_arbiter
             writeback_arbiter u_writeback_arbiter (
                 .clk(sm_clk),
                 .reset(sm_reset),

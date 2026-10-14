@@ -344,6 +344,101 @@ module final_integration_tb;
             txn_count <= txn_count + 1;
     end
 
+    // TEST 9: Monitor
+    logic test9_monitor_en = 1'b0;
+    int test9_txn_count [0:3];
+
+    always @(posedge sm_clk) begin
+        if (test9_monitor_en && u_sm_top.txn_valid) begin
+            int w, n, line;
+            logic expected_load;
+            logic [31:0] expected_addr;
+            logic [31:0] expected_mask;
+            logic [4:0] expected_dst;
+            logic expected_last;
+
+            w = int'(u_sm_top.txn_warp);
+
+            assert (w < 4)
+                else $fatal(1, "TEST 9: Unexpected warp %0d", w);
+
+            n = test9_txn_count[w];
+
+            assert (n < 12)
+                else $fatal(1, "TEST 9: Too many transactions for warp %0d", w);
+
+            // Expected transaction within each memory instruction
+            case (n)
+                // Taken path: STORE at 0x2C
+                0, 1: begin
+                    expected_addr = 32'h1000 + 32'h400 * w + 128 * (n % 2);
+                    expected_mask = 32'h1111_1111 << (n % 2);
+                    expected_load = 0;
+                    expected_dst = 5'd6;
+                    expected_last = (n == 1);
+                end
+
+                // Taken path: LOAD at 0x30
+                2, 3: begin
+                    expected_addr = 32'h1000 + 32'h400 * w + 128 * (n % 2);
+                    expected_mask = 32'h1111_1111 << (n % 2);
+                    expected_load = 1;
+                    expected_dst = 5'd8;
+                    expected_last = (n == 3);
+                end
+
+                // Not-taken path: STORE at 0x1C
+                4, 5: begin
+                    expected_addr = 32'h1100 + 32'h400 * w + 128 * (n % 2);
+                    expected_mask = 32'h4444_4444 << (n % 2);
+                    expected_load = 0;
+                    expected_dst = 5'd6;
+                    expected_last = (n == 5);
+                end
+
+                // Not-taken path: LOAD at 0x20
+                6, 7: begin
+                    expected_addr = 32'h1100 + 32'h400 * w + 128 * (n % 2);
+                    expected_mask = 32'h4444_4444 << (n % 2);
+                    expected_load = 1;
+                    expected_dst = 5'd8;
+                    expected_last = (n == 7);
+                end
+
+                // Reconverged path: LOAD at 0x34
+                8, 9, 10, 11: begin
+                    expected_addr = 32'h1000 + 32'h400 * w + 128 * (n - 8);
+                    expected_mask = 32'h1111_1111 << (n - 8);
+                    expected_load = 1;
+                    expected_dst = 5'd10;
+                    expected_last = (n == 11);
+                end
+
+                default: $fatal(1,
+                    "TEST 9: Unexpected transaction %0d for warp %0d", n, w);
+            endcase
+
+            assert (
+                u_sm_top.dcache_req_addr === expected_addr &&
+                u_sm_top.txn_match_mask === expected_mask &&
+                u_sm_top.txn_is_load === expected_load &&
+                u_sm_top.txn_dst === expected_dst &&
+                u_sm_top.txn_last === expected_last
+            )
+            else $fatal(1,
+                "TEST 9: Warp %0d transaction %0d mismatch: addr=%h expected=%h, mask=%h expected=%h, load=%b expected=%b, dst=%0d expected=%0d, last=%b expected=%b",
+                w, n,
+                u_sm_top.dcache_req_addr, expected_addr,
+                u_sm_top.txn_match_mask, expected_mask,
+                u_sm_top.txn_is_load, expected_load,
+                u_sm_top.txn_dst, expected_dst,
+                u_sm_top.txn_last, expected_last
+            );
+
+            test9_txn_count[w] = n + 1;
+        end
+    end
+
     initial begin
         logic [31:0] a [0:3];
         logic [31:0] b [0:3];
@@ -781,10 +876,6 @@ module final_integration_tb;
         load_instruction('h50, encode_r(ADD, 5'd8, 5'd10, 5'd24));
         load_instruction('h54, DONE_INSTR);
 
-        check_lane_register(3'd0, 3'd0, 2'd0, 5'd4, 32'h40000000);
-        check_lane_register(3'd0, 3'd0, 2'd0, 5'd5, 32'h40400000);
-        check_lane_register(3'd0, 3'd0, 2'd0, 5'd6, 32'h3F800000);
-
         launch_kernel(4'd8);
         wait_for_kernel_done(50000);
 
@@ -816,6 +907,100 @@ module final_integration_tb;
         end
 
         $display("TEST 8: Multi-warp arithmetic integration test PASSED");
+
+        $display("\nTEST 9: Multi-warp memory integration test");
+        reset();
+        mig_mem.delete();
+        initialize_all_lanes();
+
+        /*
+            0x00 MOV_WID R1             R1 = warp ID
+            0x04 MOV_TID R2             R2 = thread ID
+            0x08 ADD R3, R1, R2         R3 = w + t
+            0x0C ADDI R4, R0, 2         R4 = 2
+            0x10 ANDI R5, R2, 3         R5 = t % 4
+            0x14 BLT R5, R4     	    Branch if t % 4 < 2
+            target_offset=0x14, recon_offset=0x20
+
+            // not taken (t % 4 = 2 or 3)
+            0x18 ADDI R6, R3, 20        R6 = w + t + 20
+            0x1C STORE R6, [R7]
+            0x20 LOAD R8, [R7]
+            0x24 BEQ R0, R0     	    Skip taken path
+            target_offset=0x10, reconv_offset=0x10
+
+            // taken path (t % 4 = 0 or 1)
+            0x28 ADDI R6, R3, 10        R6 = w + t + 10
+            0x2C STORE R6, [R7]
+            0x30 LOAD R8, [R7]
+
+            // reconvergence point
+            0x34 LOAD R10, [R7]	All threads load after reconvergence
+            0x38 DONE	End kernel
+        */
+
+        load_instruction('h00, encode_special(MOV_WID, 5'd1));
+        load_instruction('h04, encode_special(MOV_TID, 5'd2));
+        load_instruction('h08, encode_r(ADD, 5'd1, 5'd2, 5'd3));
+        load_instruction('h0C, encode_i(ADDI, 5'd0, 5'd4, 16'd2));
+        load_instruction('h10, encode_i(ANDI, 5'd2, 5'd5, 16'd3));
+        load_instruction('h14, encode_branch(BLT, 5'd5, 5'd4, 7'h14, 9'h20));
+        load_instruction('h18, encode_i(ADDI, 5'd3, 5'd6, 16'd20));
+        load_instruction('h1C, encode_i(STORE, 5'd7, 5'd6, 16'd0));
+        load_instruction('h20, encode_i(LOAD, 5'd7, 5'd8, 16'd0));
+        load_instruction('h24, encode_branch(BEQ, 5'd0, 5'd0, 7'h10, 9'h10));
+        load_instruction('h28, encode_i(ADDI, 5'd3, 5'd6, 16'd10));
+        load_instruction('h2C, encode_i(STORE, 5'd7, 5'd6, 16'd0));
+        load_instruction('h30, encode_i(LOAD, 5'd7, 5'd8, 16'd0));
+        load_instruction('h34, encode_i(LOAD, 5'd7, 5'd10, 16'd0));
+        load_instruction('h38, DONE_INSTR);
+
+        for (int w = 0; w < 4; ++w) begin
+            for (int sw = 0; sw < 4; sw++) begin
+                for (int lane = 0; lane < 8; ++lane) begin
+                    int t, addr;
+                    t = sw * 8 + lane;
+                    addr = 32'h1000 + 32'h400 * w + 128 * (t % 4) + 4 * (t / 4);
+
+                    set_lane_register(3'(lane), 3'(w), 2'(sw), 5'd7, addr);
+                end
+            end
+        end
+
+        check_all_lanes(3'd0, 2'd0, 5'd0, 32'd0);
+
+        test9_monitor_en = 1'b1;
+        for (int w = 0; w < 4; ++w)
+            test9_txn_count[w] = 0;
+
+        launch_kernel(4'd4);
+        wait_for_kernel_done(50000);
+
+        test9_monitor_en = 1'b0;
+
+        for (int w = 0; w < 4; ++w)
+            assert (test9_txn_count[w] == 12)
+                else $error("Warp %0d: Expected 12 transactions, got %0d", w, test9_txn_count[w]);
+
+        for (int w = 0; w < 4; ++w) begin
+            for (int sw = 0; sw < 4; sw++) begin
+                check_all_lanes(3'(w), 2'(sw), 5'd1, w);
+                check_all_lanes(3'(w), 2'(sw), 5'd4, 32'd2);
+
+                for (int lane = 0; lane < 8; ++lane) begin
+                    int t;
+                    t = sw * 8 + lane;
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd2, t);
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd3, w + t);
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd5, t % 4);
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd6, (t % 4 < 2 ? w + t + 10 : w + t + 20));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd8, (t % 4 < 2 ? w + t + 10 : w + t + 20));
+                    check_lane_register(lane, 3'(w), 2'(sw), 5'd10, (t % 4 < 2 ? w + t + 10 : w + t + 20));
+                end
+            end
+        end
+
+        $display("\nTEST 9: Multi-warp memory integration test PASSED");
 
         $finish;
     end
