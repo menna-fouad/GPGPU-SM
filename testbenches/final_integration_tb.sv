@@ -418,6 +418,29 @@ module final_integration_tb;
                     "TEST 9: Unexpected transaction %0d for warp %0d", n, w);
             endcase
 
+            if (!expected_load) begin
+                assert (u_sm_top.dcache_wr_word_en === 32'h0000_00FF)
+                    else $fatal(1, "TEST 9: Incorrect word enables");
+
+                for (int word_idx = 0; word_idx < 8; ++word_idx) begin
+                    int t;
+                    logic [31:0] expected_data;
+
+                    t = 4*word_idx + (n % 2) + (n >= 4 ? 2 : 0);
+
+                    expected_data = w + t + (n < 2 ? 10 : 20);
+
+                    assert (
+                        u_sm_top.dcache_wr_data[32*word_idx +: 32] === expected_data
+                    )
+                    else $fatal(1,
+                        "TEST 9: Warp %0d txn %0d word %0d: got %h, expected %h",
+                        w, n, word_idx,
+                        u_sm_top.dcache_wr_data[32*word_idx +: 32],
+                        expected_data);
+                end
+            end
+
             assert (
                 u_sm_top.dcache_req_addr === expected_addr &&
                 u_sm_top.txn_match_mask === expected_mask &&
@@ -1000,7 +1023,25 @@ module final_integration_tb;
             end
         end
 
-        $display("\nTEST 9: Multi-warp memory integration test PASSED");
+        for (int w = 0; w < 4; ++w) begin
+            for (int t = 0; t < 32; ++t) begin
+                logic [31:0] addr, expected_data;
+                logic [22:0] beat;
+
+                addr = 32'h1000 + 'h400 * w + 128 * (t % 4) + 4 * (t / 4);
+                beat = addr[26:4];
+
+                expected_data = w + t + (t % 4 < 2 ? 10 : 20);
+
+                assert (mig_mem.exists(beat))
+                    else $fatal(1, "TEST 6: Missing dirty-line writeback");
+
+                assert (mig_mem[beat][32*addr[3:2] +: 32] === (expected_data))
+                    else $fatal(1, "TEST 6: STORE hit writeback failed");
+            end
+        end
+
+        $display("TEST 9: Multi-warp memory integration test PASSED");
 
         $finish;
     end
