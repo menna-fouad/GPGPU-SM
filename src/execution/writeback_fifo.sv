@@ -1,4 +1,6 @@
-module fifo #(
+`default_nettype none
+`timescale 1ns/1ps
+module writeback_fifo #(
     parameter int DEPTH = 16,
     parameter int COUNT_DEPTH = $clog2(DEPTH+1)
 ) (

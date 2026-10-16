@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module tb_instruction_latch;
+module instruction_latch_tb;
     logic clk, reset;
     logic consume;
     logic [1:0] sub_warp_cycle;
@@ -134,7 +134,7 @@ module tb_instruction_latch;
         check_eq(src3_addr, {3'd0, 2'd0, 5'd16}, "warp0: src3_addr mid reg num");
 
         if (errors == 0) $display("ALL TESTS PASSED");
-        else $display("%0d TEST(S) FAILED", errors);
+        else $fatal(1, "%0d TEST(S) FAILED", errors);
 
         $finish;
     end

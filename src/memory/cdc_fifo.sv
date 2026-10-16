@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module cdc_fifo #(
     parameter int DATA_WIDTH = 128,
     parameter int DEPTH = 16,
@@ -78,7 +80,7 @@ endmodule
 /*
 Instantiation:
 // cmd: SM -> mem
-async_fifo #(.DW(26), .AW(2)) cmd_fifo (
+async_fifo #(.DATA_WIDTH(26), .DEPTH(4)) cmd_fifo (
     .wclk(clk),
     .wrst(reset),
     .wen(mem_req_valid && mem_req_ready),
@@ -91,7 +93,7 @@ async_fifo #(.DW(26), .AW(2)) cmd_fifo (
 );
 
 // wdata: SM -> mem
-async_fifo #(.DW(128), .AW(4)) wr_fifo (
+async_fifo #(.DATA_WIDTH(128), .DEPTH(16)) wr_fifo (
     .wclk(clk),
     .wrst(reset),
     .wen(mem_wvalid && mem_wready),
@@ -105,7 +107,7 @@ async_fifo #(.DW(128), .AW(4)) wr_fifo (
 );
 
 // rdata: mem -> SM
-async_fifo #(.DW(129), .AW(4)) rd_fifo (
+async_fifo #(.DATA_WIDTH(129), .DEPTH(16)) rd_fifo (
     .wclk(ui_clk),
     .wrst(ui_rst),
     .wen(app_rd_data_valid),

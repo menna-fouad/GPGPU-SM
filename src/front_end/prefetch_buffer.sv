@@ -1,6 +1,9 @@
+`default_nettype none
+`timescale 1ns/1ps
 module prefetch_buffer #(
     parameter int NUM_WARPS = 8,
-    parameter int DEPTH_PER_WARP = 4,
+    parameter int DEPTH_PER_WARP = 4, // fixed at 4: one 128-bit fill holds 4 instructions
+    parameter int WARP_W = $clog2(NUM_WARPS),
     parameter [2:0] BRANCH = 3'b011,
     parameter [5:0] DONE = 6'b111111
 ) (
@@ -9,7 +12,7 @@ module prefetch_buffer #(
     input logic kernel_launch,
 
     // fill data from fetch_stage when next_warp's buffer is empty
-    input logic [2:0] next_warp,
+    input logic [WARP_W-1:0] next_warp,
     input logic fill_valid,
     input logic [127:0] fill_data, // 4 x 32b words
     input logic [127:0] fill_pcs, // 4 x 32b PCs
@@ -24,8 +27,9 @@ module prefetch_buffer #(
     logic [31:0] pcs  [0:NUM_WARPS*DEPTH_PER_WARP-1];
     logic [NUM_WARPS*DEPTH_PER_WARP-1:0] valid;
 
-    logic [4:0] next_warp_base;
-    assign next_warp_base = {2'b0, next_warp} << 2;
+    localparam int IDX_W = $clog2(NUM_WARPS*DEPTH_PER_WARP);
+    logic [IDX_W-1:0] next_warp_base;
+    assign next_warp_base = IDX_W'(next_warp) * IDX_W'(DEPTH_PER_WARP);
 
     logic [31:0] line_end_pc, valid_bound;
     assign line_end_pc = {fill_pcs[31:7] + 1'b1, 7'b0};   // start of the NEXT 128B line
@@ -54,11 +58,11 @@ module prefetch_buffer #(
                 valid[next_warp_base + k] <= is_branch_or_done ? 1'b0 : valid[next_warp_base + k + 1];
             end
 
-            valid[next_warp_base + 3] <= 1'b0;
+            valid[next_warp_base + DEPTH_PER_WARP - 1] <= 1'b0;
         end
     end
 
-    assign instr = data[next_warp_base]; // next_warp * 4
+    assign instr = data[next_warp_base]; // next_warp * DEPTH_PER_WARP
     assign instr_pc = pcs[next_warp_base];
     assign fetch_valid = valid[next_warp_base];
 endmodule

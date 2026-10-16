@@ -258,7 +258,7 @@ module fp32_fma_tb;
         if (errors == 0)
             $display("ALL TESTS PASSED");
         else
-            $display("SOME TESTS FAILED");
+            $fatal(1, "SOME TESTS FAILED");
 
         $finish;
     end

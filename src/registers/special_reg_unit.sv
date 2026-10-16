@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module special_reg_unit # (
     parameter [2:0] LANE_NUM // number of lane instance (0-7)
 ) (

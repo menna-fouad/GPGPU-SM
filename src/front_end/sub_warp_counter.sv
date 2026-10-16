@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module sub_warp_counter(
     input logic clk,
     input logic reset,

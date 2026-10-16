@@ -651,7 +651,7 @@ module memory_integration_tb;
         if (error_count == 0)
             $display("\nALL TESTS PASSED");
         else
-            $display("\nTESTBENCH FAILED: %0d ERROR(S)", error_count);
+            $fatal(1, "\nTESTBENCH FAILED: %0d ERROR(S)", error_count);
         
         $finish;
     end

@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module writeback_arbiter (
     input logic clk,
     input logic reset,
@@ -89,7 +91,7 @@ module writeback_arbiter (
 
     assign buffer_pop = grant_buffer;
 
-    fifo #(.DEPTH(16)) buffer (
+    writeback_fifo #(.DEPTH(16)) buffer (
         .clk(clk),
         .reset(reset),
         

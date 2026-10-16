@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module load_store_unit (
     input logic clk,
     input logic reset,

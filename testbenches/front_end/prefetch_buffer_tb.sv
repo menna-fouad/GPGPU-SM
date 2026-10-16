@@ -223,6 +223,8 @@ module prefetch_buffer_tb;
         check_valid(1'b0);          // words 2,3 (0x9080, 0x9084) are in the NEXT line, therefore invalid
 
         $display("tests=%0d errors=%0d", tests, errors);
+        if (errors == 0) $display("ALL TESTS PASSED");
+        else $fatal(1, "%0d TEST(S) FAILED", errors);
         $finish;
     end
 endmodule

@@ -12,11 +12,10 @@ module load_store_unit_tb;
     logic [1023:0] rsp_line;
 
     logic [7:0] lsu_valid;
-    logic [7:0][9:0] lsu_addr;
+    logic [9:0] lsu_addr; // shared by all 8 lanes of the group being written back
     logic [7:0][31:0] lsu_data;
     
-    logic store_done;
-    logic [2:0] store_done_warp;
+    logic [7:0] store_done; // one-hot per warp
 
     int error_count = 0;
 
@@ -72,7 +71,7 @@ module load_store_unit_tb;
             t = group*8 + l;
 
             if (expected_mask[t]) begin
-                check(lsu_addr[l] === {warp, group, dst},
+                check(lsu_addr === {warp, group, dst},
                     $sformatf("Thread %0d writeback address", t));
 
                 check(lsu_data[l] === expected_data[t],
@@ -170,7 +169,7 @@ module load_store_unit_tb;
         tick();
 
         check(lsu_valid === 8'b0, "Writeback stops after group 3");
-        check(store_done === 1'b0, "Load does not generate store_done");
+        check(store_done === 8'b0, "Load does not generate store_done");
 
         $display("\nTEST 2: Multiple cache-line load");
         expected_mask = 32'h0000_FFFF;
@@ -204,9 +203,9 @@ module load_store_unit_tb;
         end
 
         check(lsu_valid === 8'b0, "Writeback stops after group 3");
-        check(store_done === 1'b0, "Load does not generate store_done");
+        check(store_done === 8'b0, "Load does not generate store_done");
 
-        $display("\nTEST 3: Single cache-line load");
+        $display("\nTEST 3: Store instruction");
         expected_mask = 32'hABAB_ABAB;
         word_sel = '0;
         expected_data = '0;
@@ -223,14 +222,13 @@ module load_store_unit_tb;
         rsp_line = line;
         
         #1;
-        check(store_done === 1'b1, "Store instruction should fire store_done");
-        check(store_done_warp === 3'd5, "Warp 5 issued store instruction");
+        check(store_done === 8'b0010_0000, "Store instruction from warp 5 fires store_done[5] only");
         check(lsu_valid === 8'b0, "Store should not generate register writeback");
 
         tick();
         rsp_valid = 1'b0;
 
-        check(store_done === 1'b0, "store_done deasserts after response");
+        check(store_done === 8'b0, "store_done deasserts after response");
 
         $display("\nTEST 4: Simultaneous FIFO push/pop");        
 
@@ -470,7 +468,7 @@ module load_store_unit_tb;
         if (error_count === 0)
             $display("\nALL TESTS PASSED");
         else
-            $display("\nTESTS FAILED: %0d error(s)", error_count);
+            $fatal(1, "\nTESTS FAILED: %0d error(s)", error_count);
 
         $finish;
     end

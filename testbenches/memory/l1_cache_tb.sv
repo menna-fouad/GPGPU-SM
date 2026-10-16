@@ -129,7 +129,7 @@ module main_memory_stub #(
     end
 endmodule
 
-module tb_l1_cache;
+module l1_cache_tb;
     localparam int MEM_W = 128;
     localparam int ID_W  = 4;
     localparam int WORDS = 16384;
@@ -411,7 +411,7 @@ module tb_l1_cache;
 
         $display("fills %0d, writebacks %0d", memory.n_reads, memory.n_writes);
         if (errors == 0) $display("ALL TESTS PASSED");
-        else $display("%0d TEST(S) FAILED", errors);
+        else $fatal(1, "%0d TEST(S) FAILED", errors);
         $finish;
     end
 endmodule

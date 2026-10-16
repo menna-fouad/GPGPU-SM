@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module register_file_tb;
+module reg_file_tb;
     logic clk;
     logic reset;
 
@@ -157,7 +157,7 @@ module register_file_tb;
         if (errors == 0)
             $display("\nALL TESTS PASSED");
         else
-            $display("\n%0d TEST(S) FAILED", errors);
+            $fatal(1, "\n%0d TEST(S) FAILED", errors);
 
         $finish;
     end

@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module mask_split_unit #(
     parameter int NUM_WARPS = 8
 ) (

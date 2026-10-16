@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module l1_cache #(
     parameter int ID_W  = 1,
     parameter int MEM_W = 128   // memory-side beat width: 32, 64, 128, 256 or 512

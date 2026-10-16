@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module mem_expander (
     input logic ui_clk,
     input logic ui_rst,

@@ -1,6 +1,6 @@
-module memory_coalescing_unit /* #(
-    // parameter int ID_W = 1 (used later when changing cache to non-blocking)
-)*/ (
+`default_nettype none
+`timescale 1ns/1ps
+module memory_coalescing_unit (
     input logic clk,
     input logic reset,
     // input from ALU

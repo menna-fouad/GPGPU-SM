@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 `define ERR(msg) begin $display("[%0t] ERROR: %s", $time, msg); errors = errors + 1; end
-module tb_mem_expander;
+module mem_expander_tb;
 
     // clock / reset
     logic ui_clk = 0;
@@ -286,12 +286,12 @@ module tb_mem_expander;
         $display("cycles stalled waiting for write data: %0d   stalled on app_rdy: %0d", n_data_stall, n_rdy_stall);
         $display("%s  (%0d errors)", (errors == 0) ? "PASS" : "FAIL", errors);
         $display("--------------------------------------------------");
+        if (errors != 0) $fatal(1, "FAIL");
         $finish;
     end
 
     initial begin
         #20_000_000;
-        $display("TIMEOUT");
-        $finish;
+        $fatal(1, "TIMEOUT");
     end
 endmodule

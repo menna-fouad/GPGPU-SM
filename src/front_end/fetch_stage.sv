@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module fetch_stage (
     input logic clk,
     input logic reset,

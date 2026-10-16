@@ -441,7 +441,7 @@ module memory_coalescing_unit_tb;
         if (error_count == 0)
             $display("ALL COALESCER TESTS PASSED");
         else
-            $display("COALESCER TEST FAILED: %0d error(s)", error_count);
+            $fatal(1, "COALESCER TEST FAILED: %0d error(s)", error_count);
 
         $finish;
     end

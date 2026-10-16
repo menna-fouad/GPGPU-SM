@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module sm_top (
     input logic sm_clk,
     input logic sm_reset,

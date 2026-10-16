@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module tb_cdc_fifo;
+module cdc_fifo_tb;
     localparam int DATA_WIDTH = 128;
     localparam int DEPTH = 16;
 
@@ -138,6 +138,7 @@ module tb_cdc_fifo;
         $display("\nwrites accepted: %0d   reads accepted: %0d", n_wr, n_rd);
         $display("writes blocked by full: %0d   reads blocked by empty: %0d", n_wblocked, n_rblocked);
         $display("%s  (%0d errors)", (errors == 0) ? "PASS" : "FAIL", errors);
+        if (errors != 0) $fatal(1, "FAIL");
 
         $finish;
     end

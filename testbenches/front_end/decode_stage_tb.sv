@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
-module tb_decode_stage;
+module decode_stage_tb;
     logic clk, reset;
+    logic buffer_full;
     logic sub_warp_valid;
     logic [1:0] sub_warp_cycle;
     logic [2:0] curr_warp;
@@ -10,6 +11,7 @@ module tb_decode_stage;
     logic sub_warp_valid_q;
     logic [1:0] sub_warp_cycle_q;
     logic [5:0] opcode_q;
+    logic done_detect;
     logic [7:0] alu_valid_q, fma_valid_q, special_reg_valid_q;
     logic [9:0] dest_addr_q;
     logic [15:0] imm_q;
@@ -20,6 +22,7 @@ module tb_decode_stage;
     decode_stage dut (
         .clk(clk),
         .reset(reset),
+        .buffer_full(buffer_full),
         .sub_warp_valid(sub_warp_valid),
         .sub_warp_cycle(sub_warp_cycle),
         .curr_warp(curr_warp),
@@ -28,6 +31,7 @@ module tb_decode_stage;
         .sub_warp_valid_q(sub_warp_valid_q),
         .sub_warp_cycle_q(sub_warp_cycle_q),
         .opcode_q(opcode_q),
+        .done_detect(done_detect),
         .alu_valid_q(alu_valid_q),
         .fma_valid_q(fma_valid_q),
         .special_reg_valid_q(special_reg_valid_q),
@@ -50,7 +54,9 @@ module tb_decode_stage;
         end
     endtask
 
-    // drive one instruction/context in, wait a clock, check registered outputs
+    // decode registers sub_warp_cycle/valid internally and uses them one cycle later,
+    // when the instruction latch presents the instruction for that sub-warp.
+    // Drive the sub-warp count first, then the instruction, then check registered outputs
     task run_cycle(
         input [31:0] t_instr,
         input [31:0] t_instr_pc,
@@ -59,11 +65,13 @@ module tb_decode_stage;
         input        t_sub_warp_valid,
         input [31:0] t_active_mask
     );
+        @(negedge clk);
+        sub_warp_cycle  = t_sub_warp_cycle;
+        sub_warp_valid  = t_sub_warp_valid;
+        @(negedge clk);
         instr           = t_instr;
         instr_pc        = t_instr_pc;
         curr_warp       = t_curr_warp;
-        sub_warp_cycle  = t_sub_warp_cycle;
-        sub_warp_valid  = t_sub_warp_valid;
         active_mask     = t_active_mask;
         @(posedge clk);
         #1; // settle
@@ -73,6 +81,7 @@ module tb_decode_stage;
         errors = 0;
         clk = 1'b0;
         reset = 1'b1;
+        buffer_full = 1'b0;
         sub_warp_valid = 1'b0;
         sub_warp_cycle = 2'b0;
         curr_warp = 3'b0;
@@ -149,7 +158,8 @@ module tb_decode_stage;
         run_cycle({R_TYPE, 3'b001, 5'd4, 10'b0}, 32'h600,
                    3'd1, 2'd1, 1'b0, 32'hFFFF_FFFF);
         check_eq(sub_warp_valid_q, 1'b0, "held cycle: sub_warp_valid_q forwards 0");
-        check_eq(sub_warp_cycle_q, 2'd1, "held cycle: sub_warp_cycle_q still forwards live value");
+        check_eq(sub_warp_cycle_q, 2'd1, "held cycle: sub_warp_cycle_q still forwards the cycle");
+        check_eq(alu_valid_q, 8'h00, "held cycle: no lane valid");
 
         // 8. mask slicing at all 4 byte boundaries in one instruction type ----
         // confirms curr_active_mask indexing (sub_warp_cycle*8 +: 8) picks the right byte
@@ -166,8 +176,58 @@ module tb_decode_stage;
                    {8'hD4, 8'hC3, 8'hB2, 8'hA1});
         check_eq(alu_valid_q, 8'hD4, "mask byte 3 (bits[31:24])");
 
+        // 9. DONE is detected on sub-warp 0 only, and only when valid
+        // done_detect is combinational on the instruction and the delayed sub-warp count
+        run_cycle(32'hFC00_0000, 32'h800, 3'd4, 2'd0, 1'b1, 32'hFFFF_FFFF);
+        check_eq(done_detect, 1'b1, "DONE at sub-warp 0: done_detect");
+        check_eq(alu_valid_q | fma_valid_q | special_reg_valid_q, 8'h00, "DONE: no execution unit valid");
+        sub_warp_cycle = 2'd1;
+        @(posedge clk); #1;
+        check_eq(done_detect, 1'b0, "DONE at sub-warp 1: no done_detect");
+        sub_warp_cycle = 2'd0; sub_warp_valid = 1'b0;
+        @(posedge clk); #1;
+        check_eq(done_detect, 1'b0, "DONE with invalid sub-warp: no done_detect");
+
+        // 10. Pipeline-style stream: one FMA held for four sub-warps while the counter advances.
+        // Each sub-warp must get its own dest_addr sub-warp field and mask byte
+        @(negedge clk);
+        sub_warp_cycle = 2'd0; sub_warp_valid = 1'b1;
+        @(negedge clk);
+        instr = {FMA, 3'b000, 5'd1, 5'd2, 5'd3, 5'd17, 6'b0};
+        instr_pc = 32'h900;
+        curr_warp = 3'd6;
+        active_mask = {8'h80, 8'h40, 8'h20, 8'h10};
+        for (int sw = 0; sw < 4; sw++) begin
+            sub_warp_cycle = 2'(sw + 1);
+            sub_warp_valid = (sw < 3);
+            @(posedge clk); #1;
+            check_eq(dest_addr_q, {3'd6, 2'(sw), 5'd17}, $sformatf("stream: dest_addr_q sub-warp %0d", sw));
+            check_eq(fma_valid_q, 8'h10 << sw, $sformatf("stream: fma_valid_q sub-warp %0d", sw));
+            check_eq(sub_warp_cycle_q, sw, $sformatf("stream: sub_warp_cycle_q sub-warp %0d", sw));
+            @(negedge clk);
+        end
+
+        // 11. buffer_full holds every registered output and the delayed sub-warp count
+        run_cycle({R_TYPE, 3'b001, 5'd1, 5'd2, 5'd5, 11'b0}, 32'hA00, 3'd1, 2'd2, 1'b1, 32'h00FF_0000);
+        check_eq(dest_addr_q, {3'd1, 2'd2, 5'd5}, "before stall: dest_addr_q");
+        @(negedge clk);
+        buffer_full = 1'b1;
+        instr = {I_TYPE, 3'b001, 5'd0, 5'd9, 16'h1234};
+        curr_warp = 3'd3;
+        sub_warp_cycle = 2'd3;
+        repeat (3) @(posedge clk);
+        #1;
+        check_eq(dest_addr_q, {3'd1, 2'd2, 5'd5}, "stalled: dest_addr_q held");
+        check_eq(alu_valid_q, 8'hFF, "stalled: alu_valid_q held");
+        check_eq(opcode_q, {R_TYPE, 3'b001}, "stalled: opcode_q held");
+        check_eq(dut.sub_warp_cycle_prev, 2'd2, "stalled: delayed sub-warp count held");
+        @(negedge clk);
+        buffer_full = 1'b0;
+        @(posedge clk); #1;
+        check_eq(dest_addr_q, {3'd3, 2'd2, 5'd9}, "released: decodes the held sub-warp with the new instruction");
+
         if (errors == 0) $display("ALL TESTS PASSED");
-        else $display("%0d TEST(S) FAILED", errors);
+        else $fatal(1, "%0d TEST(S) FAILED", errors);
 
         $finish;
     end

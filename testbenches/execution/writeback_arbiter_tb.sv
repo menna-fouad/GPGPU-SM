@@ -207,7 +207,7 @@ module writeback_arbiter_tb;
         if (errors == 0)
             $display("\nALL TESTS PASSED");
         else
-            $display("\nERRORS: %0d", errors);
+            $fatal(1, "\nERRORS: %0d", errors);
 
         $finish;
     end

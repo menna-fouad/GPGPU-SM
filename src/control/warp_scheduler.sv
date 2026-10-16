@@ -1,14 +1,17 @@
+`default_nettype none
+`timescale 1ns/1ps
 module warp_scheduler #(
-    parameter int NUM_WARPS = 8
+    parameter int NUM_WARPS = 8,
+    parameter int WARP_W = $clog2(NUM_WARPS)
 ) (
     input logic clk,
     input logic reset,
 
     input logic kernel_start,
-    input logic [3:0] num_warps,
+    input logic [WARP_W:0] num_warps,
 
-    input logic [7:0] commit_done,
-    input logic [7:0] store_done,
+    input logic [NUM_WARPS-1:0] commit_done,
+    input logic [NUM_WARPS-1:0] store_done,
     input logic [NUM_WARPS-1:0] push2_done,
     output logic have_ready,
 
@@ -22,8 +25,8 @@ module warp_scheduler #(
     input logic done_detect,
     input logic flush_done, // used to set kernel_done
 
-    output logic [2:0] curr_warp,
-    output logic [2:0] next_warp,
+    output logic [WARP_W-1:0] curr_warp,
+    output logic [WARP_W-1:0] next_warp,
     output logic issue_valid,
     output logic warps_done, // used to trigger flush_start in data cache
     output logic kernel_done
@@ -33,32 +36,37 @@ module warp_scheduler #(
     logic [NUM_WARPS-1:0] finished;
 
     // ready_mask is computed combinationall to show which warps are ready
-    logic [NUM_WARPS-1:0] ready_mask;
+    logic [NUM_WARPS-1:0] ready_mask, pick_mask;
     always_comb begin
         for (int i = 0; i < NUM_WARPS; i++) begin
             ready_mask[i] = (ready[i] | push2_done[i] | commit_done[i] | store_done[i]) // ready
                             & ~finished[i]                                                    // and not finished previously
                             & ~(i == curr_warp & done_detect);                                // or this cycle
         end
+        
+        // The warp being issued this cycle can't be picked to go after itself
+        pick_mask = ready_mask;
+        if (consume) pick_mask[next_warp] = 1'b0;
     end
 
-    logic [2:0] picked_warp;
+    logic [WARP_W-1:0] picked_warp;
     always_comb begin
-        have_ready = |ready_mask;
+        // A staged warp (issue_valid) has had its ready bit cleared but still has to issue
+        have_ready = |ready_mask || issue_valid;
         picked_warp = '0;
         for (int i = NUM_WARPS-1; i >= 0; i--)
             // If its ready and it not the warp just finished then pick it
-            if (ready_mask[i]) picked_warp = i[2:0];
+            if (pick_mask[i]) picked_warp = i[WARP_W-1:0];
     end
 
-    // GTO: stay on curr_warp if it's still ready and not stalled/busy, else switch.
-    logic [2:0] next_warp_d;
+    // GTO: stay on curr_warp if it's still ready and not being issued, else switch.
+    logic [WARP_W-1:0] next_warp_d;
     logic next_valid_d;
     always_comb begin
-        if (ready_mask[curr_warp]) begin
+        if (pick_mask[curr_warp]) begin
             next_warp_d = curr_warp;
             next_valid_d = 1'b1;
-        end else if (have_ready) begin
+        end else if (|pick_mask) begin
             next_warp_d = picked_warp;
             next_valid_d = 1'b1;
         end else begin
@@ -79,14 +87,11 @@ module warp_scheduler #(
             curr_warp <= '0;
             next_warp <= '0;
             issue_valid <= (num_warps != 0);
-        end else if (done_detect) begin
-            issue_valid <= 1'b0;
         end else if (decision) begin
             curr_warp <= next_warp;      // adopt last span's staged pick
             next_warp <= next_warp_d;    // stage the following span's pick
             issue_valid <= next_valid_d;
         end else if (!issue_valid && next_valid_d) begin
-            curr_warp <= next_warp_d;
             next_warp <= next_warp_d;
             issue_valid <= 1'b1;
         end
@@ -99,7 +104,7 @@ module warp_scheduler #(
             instr_busy <= '0;
         end else begin
             for (int i = 0; i < NUM_WARPS; i++) begin
-                if (consume && next_warp == i[2:0])
+                if (consume && next_warp == i[WARP_W-1:0])
                     instr_busy[i] <= 1'b1;
                 else if (commit_done[i] || store_done[i] || push2_done[i])
                     instr_busy[i] <= 1'b0;
@@ -122,7 +127,7 @@ module warp_scheduler #(
             for (int i = 0; i < NUM_WARPS; i++) begin
                 logic set_ready, clear_ready;
                 set_ready = commit_done[i] || store_done[i] || push2_done[i];
-                clear_ready = decision && next_valid_d && (next_warp_d == i[2:0]);
+                clear_ready = decision && next_valid_d && (next_warp_d == i[WARP_W-1:0]);
 
                 if (clear_ready) ready[i] <= 1'b0;
                 else if (set_ready) ready[i] <= 1'b1;

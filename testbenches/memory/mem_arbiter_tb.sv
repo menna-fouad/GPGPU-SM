@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module tb_mem_arbiter;
+module mem_arbiter_tb;
     localparam int MEM_W = 128;
     localparam int BEATS = 8;
     localparam logic ICA = 1'b0;
@@ -12,12 +12,12 @@ module tb_mem_arbiter;
     logic reset;
 
     // DUT instantiation
-    logic i_cache_req_valid, d_cache_req_valid, i_cache_req_write, d_cache_req_write;
+    logic i_cache_req_valid, d_cache_req_valid, d_cache_req_write; // the I$ is read-only
     logic [31:0] i_cache_req_addr, d_cache_req_addr;
     logic i_cache_req_ready, d_cache_req_ready;
-    wire  i_cache_wvalid, d_cache_wvalid, i_cache_wlast, d_cache_wlast;
-    wire  [MEM_W-1:0] i_cache_wdata, d_cache_wdata;
-    logic i_cache_wready, d_cache_wready;
+    wire  d_cache_wvalid, d_cache_wlast;
+    wire  [MEM_W-1:0] d_cache_wdata;
+    logic d_cache_wready;
     logic [MEM_W-1:0] i_cache_rdata, d_cache_rdata;
     logic i_cache_rvalid, d_cache_rvalid, i_cache_rlast, d_cache_rlast;
     logic arb_cmd_ready, arb_wready, rsp_valid, rsp_last;
@@ -28,15 +28,12 @@ module tb_mem_arbiter;
 
     mem_arbiter #(.MEM_W(MEM_W)) dut (.*);
 
-    // Write-side outputs of a cache are JUNK (wvalid=1, wlast=1, bad data)
-    // unless that cache owns the current write burst
-    logic i_act = 0, d_act = 0, i_wv_r, d_wv_r, i_wl_r, d_wl_r;
-    logic [MEM_W-1:0] i_wd_r, d_wd_r;
-    assign i_cache_wvalid = i_act ? i_wv_r : 1'b1;
+    // Write-side outputs of the D$ are JUNK (wvalid=1, wlast=1, bad data)
+    // unless it owns the current write burst
+    logic d_act = 0, d_wv_r, d_wl_r;
+    logic [MEM_W-1:0] d_wd_r;
     assign d_cache_wvalid = d_act ? d_wv_r : 1'b1;
-    assign i_cache_wlast  = i_act ? i_wl_r : 1'b1;
     assign d_cache_wlast  = d_act ? d_wl_r : 1'b1;
-    assign i_cache_wdata  = i_act ? i_wd_r : {4{32'hBAD0_0000}};
     assign d_cache_wdata  = d_act ? d_wd_r : {4{32'hBAD1_0001}};
 
     // data patterns: every word encodes where it came from
@@ -85,10 +82,9 @@ module tb_mem_arbiter;
         if (reset) begin
             busy = 0; last_win = 0; rbeat = 0; wbeat = 0;   // reset clears the model too
         end else begin
-            check((^{arb_cmd_valid, arb_wvalid, i_cache_req_ready, d_cache_req_ready, i_cache_wready,
+            check((^{arb_cmd_valid, arb_wvalid, i_cache_req_ready, d_cache_req_ready,
                      d_cache_wready, i_cache_rvalid, d_cache_rvalid}) !== 1'bx, "MONITOR: X/Z on arbiter control output");
             check(!(i_cache_req_ready && d_cache_req_ready), "MONITOR: both caches got req_ready");
-            check(!(i_cache_wready && d_cache_wready),       "MONITOR: both caches got wready");
             check(!(i_cache_rvalid && d_cache_rvalid),       "MONITOR: both caches got rvalid");
 
             // cmd channel
@@ -97,9 +93,8 @@ module tb_mem_arbiter;
             if (arb_cmd_valid && !arb_cmd_ready) n_cmdstall = n_cmdstall + 1;
 
             // write channel
-            check(arb_wvalid === (busy && is_wr && (txn_reg ? d_cache_wvalid : i_cache_wvalid)),
-                  "MONITOR: arb_wvalid != owner wvalid gated by write state");
-            check(i_cache_wready === (busy && is_wr && txn_reg == ICA && arb_wready), "MONITOR: i_cache_wready wrong");
+            check(arb_wvalid === (busy && is_wr && txn_reg == DCA && d_cache_wvalid),
+                  "MONITOR: arb_wvalid != D$ wvalid gated by write state");
             check(d_cache_wready === (busy && is_wr && txn_reg == DCA && arb_wready), "MONITOR: d_cache_wready wrong");
             if (arb_wvalid && !arb_wready) n_wstall = n_wstall + 1;
             if (arb_wvalid && arb_wready) begin
@@ -126,6 +121,7 @@ module tb_mem_arbiter;
                 mon_cmds = mon_cmds + 1;
                 txn_reg  = arb_cmd_addr[30];
                 check(txn_reg ? d_cache_req_valid : i_cache_req_valid, "MONITOR: command forwarded for a non-requesting cache");
+                check(!(txn_reg == ICA && arb_cmd_write), "MONITOR: write command forwarded for the read-only I$");
                 if (i_cache_req_valid && d_cache_req_valid) begin
                     n_ties = n_ties + 1;
                     check(txn_reg != last_win, "MONITOR: tie must alternate (D$ first after reset)");
@@ -143,33 +139,30 @@ module tb_mem_arbiter;
               arb_wready = $urandom; end
     endtask
 
-    task automatic drive_w(input logic who, input logic v, input logic l, input logic [MEM_W-1:0] d);
-        begin
-            if (who == ICA) begin i_act = 1; i_wv_r = v; i_wl_r = l; i_wd_r = d; end
-            else            begin d_act = 1; d_wv_r = v; d_wl_r = l; d_wd_r = d; end
-        end
+    task automatic drive_w(input logic v, input logic l, input logic [MEM_W-1:0] d);
+        begin d_act = 1; d_wv_r = v; d_wl_r = l; d_wd_r = d; end
     endtask
 
-    // 8 write beats. host: random wvalid bubbles (with wlast HIGH, must not end burst) + random wready stalls.
-    task automatic wphase(input logic who, input logic [31:0] addr);
+    // 8 D$ write beats. host: random wvalid bubbles (with wlast HIGH, must not end burst) + random wready stalls.
+    task automatic wphase(input logic [31:0] addr);
         integer b, g, s;
         begin
             for (b = 0; b < BEATS; b = b + 1) begin
                 if (k_host) begin
                     g = $urandom_range(0, 2);
                     repeat (g) begin
-                        drive_w(who, 1'b0, 1'b1, ~wr_word(int'(who), addr, b));
+                        drive_w(1'b0, 1'b1, ~wr_word(int'(DCA), addr, b));
                         arb_wready = $urandom; tick;
                     end
                 end
-                drive_w(who, 1'b1, (b == BEATS-1), wr_word(int'(who), addr, b));
+                drive_w(1'b1, (b == BEATS-1), wr_word(int'(DCA), addr, b));
                 if (k_host) begin
                     s = $urandom_range(0, 3);
                     repeat (s) begin arb_wready = 1'b0; tick; end
                 end
                 arb_wready = 1'b1; tick;                       // beat accepted at this edge
             end
-            i_act = 0; d_act = 0; arb_wready = $urandom;
+            d_act = 0; arb_wready = $urandom;
         end
     endtask
 
@@ -196,14 +189,15 @@ module tb_mem_arbiter;
 
     // Serve every currently-requesting cache, in correct order and monitor
     // k_again: winner re-requests right after its burst if it doesn't get picked
-    task automatic round(input logic iv, input logic dv, input logic iw, input logic dw);
+    // The I$ only ever reads; dw selects a D$ read or write
+    task automatic round(input logic iv, input logic dv, input logic dw);
         logic win, wr;
         logic [31:0] addr;
         integer left;
         begin
             left = k_again;
             arb_cmd_ready = 1'b0;
-            i_cache_req_valid = iv; i_cache_req_write = iw; i_cache_req_addr = IBASE | (32'($urandom_range(255)) << 7);
+            i_cache_req_valid = iv; i_cache_req_addr = IBASE | (32'($urandom_range(255)) << 7);
             d_cache_req_valid = dv; d_cache_req_write = dw; d_cache_req_addr = DBASE | (32'($urandom_range(255)) << 7);
             if (iv && dv && k_dly > 0) begin          // D$ arrives late, while I$'s command is stalled
                 d_cache_req_valid = 1'b0;
@@ -219,7 +213,7 @@ module tb_mem_arbiter;
                 check(arb_cmd_valid === 1'b1, "round: cmd_valid must be high");
                 check((i_cache_req_ready === 1'b1) !== (d_cache_req_ready === 1'b1), "round: exactly one cache must be granted");
                 win  = (d_cache_req_ready === 1'b1);
-                wr   = win ? d_cache_req_write : i_cache_req_write;
+                wr   = win ? d_cache_req_write : 1'b0;
                 addr = win ? d_cache_req_addr  : i_cache_req_addr;
                 check(arb_cmd_write === wr,  "round: forwarded cmd_write differs from winner's");
                 check(arb_cmd_addr  === addr, "round: forwarded cmd_addr differs from winner's");
@@ -227,15 +221,14 @@ module tb_mem_arbiter;
                 arb_cmd_ready = $urandom;                // junk during the burst
                 if (win) d_cache_req_valid = 1'b0; else i_cache_req_valid = 1'b0;
 
-                if (wr) begin wphase(win, addr); srv_wr = srv_wr + 1; if (win) d_nw = d_nw + 1; else i_nw = i_nw + 1; end
+                if (wr) begin wphase(addr); srv_wr = srv_wr + 1; if (win) d_nw = d_nw + 1; else i_nw = i_nw + 1; end
                 else    begin rphase(addr);      srv_rd = srv_rd + 1; if (win) d_nr = d_nr + 1; else i_nr = i_nr + 1; end
 
                 if (left > 0) begin                      // winner immediately asks again
                     left = left - 1; n_again = n_again + 1;
                     if (win) begin d_cache_req_valid = 1; d_cache_req_addr = DBASE | (32'($urandom_range(255)) << 7);
                                    if (k_rnd) d_cache_req_write = $urandom; end
-                    else     begin i_cache_req_valid = 1; i_cache_req_addr = IBASE | (32'($urandom_range(255)) << 7);
-                                   if (k_rnd) i_cache_req_write = $urandom; end
+                    else     begin i_cache_req_valid = 1; i_cache_req_addr = IBASE | (32'($urandom_range(255)) << 7); end
                 end
             end
             arb_cmd_ready = 1'b0; tick;
@@ -251,30 +244,30 @@ module tb_mem_arbiter;
         void'($urandom(seed));
 
         reset = 1;
-        i_cache_req_valid = 0; d_cache_req_valid = 0; i_cache_req_write = 0; d_cache_req_write = 0;
+        i_cache_req_valid = 0; d_cache_req_valid = 0; d_cache_req_write = 0;
         i_cache_req_addr = 0; d_cache_req_addr = 0;
         arb_cmd_ready = 0; arb_wready = 0; rsp_valid = 0; rsp_last = 0; rsp_data = 0;
         repeat (3) @(posedge clk);
         #1 reset = 0;
         tick;
 
-        $display("1. single requester, ideal FIFOs (I$ rd, D$ rd, D$ wr, I$ wr, D$ wr+rd)");
+        $display("1. single requester, ideal FIFOs (I$ rd, D$ rd, D$ wr, D$ wr+rd)");
         knobs(0, 0, 0, 0, 0);
-        round(1, 0, 0, 0);
-        round(0, 1, 0, 0);
-        round(0, 1, 0, 1);
-        round(1, 0, 1, 0);
-        round(0, 1, 0, 1);  round(0, 1, 0, 0);
+        round(1, 0, 0);
+        round(0, 1, 0);
+        round(0, 1, 1);
+        round(1, 0, 0);
+        round(0, 1, 1);  round(0, 1, 0);
 
         $display("2. single requester, hostile FIFOs (cmd stalls, wready stalls, wvalid bubbles, read gaps)");
         knobs(3, 0, 1, 0, 0);
-        round(0, 1, 0, 0);  round(0, 1, 0, 1);  round(1, 0, 1, 0);  round(1, 0, 0, 0);
+        round(0, 1, 0);  round(0, 1, 1);  round(1, 0, 0);  round(1, 0, 0);
 
         $display("3. contention - ties, alternation under re-request, mixed rd/wr, late arrival");
-        knobs(0, 3, 0, 0, 0);   round(1, 1, 0, 0);        // D,I,D,I,.. while both keep asking
-        knobs(0, 1, 0, 0, 0);   round(1, 1, 0, 1);
-        knobs(2, 2, 1, 0, 0);   round(1, 1, 1, 1);
-        knobs(2, 1, 0, 0, 2);   round(1, 1, 0, 0);        // D$ shows up 2 cycles into I$'s stall
+        knobs(0, 3, 0, 0, 0);   round(1, 1, 0);        // D,I,D,I,.. while both keep asking
+        knobs(0, 1, 0, 0, 0);   round(1, 1, 1);
+        knobs(2, 2, 1, 0, 0);   round(1, 1, 1);
+        knobs(2, 1, 0, 0, 2);   round(1, 1, 0);        // D$ shows up 2 cycles into I$'s stall
 
         $display("4. reset in the middle of a read burst, then a tie (must go to D$ again)");
         knobs(0, 0, 0, 0, 0);
@@ -289,14 +282,14 @@ module tb_mem_arbiter;
         reset = 0; rsp_valid = 1; rsp_last = 1; rsp_data = {4{32'hDEAD_BEEF}};
         tick;                                           // junk response after reset must not leak
         rsp_valid = 0;
-        round(1, 1, 0, 0);                              // first tie after reset: model says D$ wins
+        round(1, 1, 0);                                 // first tie after reset: model says D$ wins
 
         $display("5. random traffic (requesters, rd/wr, stalls, bubbles, re-requests, late arrival)");
         for (k = 0; k < 200; k = k + 1) begin
             knobs($urandom_range(0, 4), $urandom_range(0, 2), $urandom, 1'b1, $urandom_range(0, 3));
             iv = $urandom; dv = $urandom;
             if (!iv && !dv) iv = 1;
-            round(iv, dv, $urandom, $urandom);
+            round(iv, dv, $urandom);
         end
 
         // SCOREBOARD
@@ -312,7 +305,8 @@ module tb_mem_arbiter;
         check(n_wstall > 0, "write channel never stalled");
         check(n_rgap > 0, "read return never had a gap");
         check(n_again > 0, "no back-to-back re-request happened");
-        check(i_nw > 0 && i_nr > 0 && d_nw > 0 && d_nr > 0, "each cache must do reads and writes");
+        check(i_nr > 0 && d_nw > 0 && d_nr > 0, "I$ must read, D$ must read and write");
+        check(i_nw == 0, "I$ must never write");
 
         $display("--------------------------------------------------");
         $display("txns %0d (I$: %0d wr %0d rd | D$: %0d wr %0d rd)  ties %0d  re-requests %0d",
@@ -320,12 +314,12 @@ module tb_mem_arbiter;
         $display("stall cycles: cmd %0d  wdata %0d  read gaps %0d   (%0d checks)", n_cmdstall, n_wstall, n_rgap, checks);
         $display("%s  (%0d errors)", errors == 0 ? "PASS" : "FAIL", errors);
         $display("--------------------------------------------------");
+        if (errors != 0) $fatal(1, "FAIL");
         $finish;
     end
 
     initial begin
         #20_000_000;
-        $display("FAIL | timeout");
-        $finish;
+        $fatal(1, "FAIL | timeout");
     end
 endmodule

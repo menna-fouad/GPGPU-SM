@@ -1,3 +1,5 @@
+`default_nettype none
+`timescale 1ns/1ps
 module l1_icache # (
     parameter int ID_W = 1,
     parameter int MEM_W = 128
