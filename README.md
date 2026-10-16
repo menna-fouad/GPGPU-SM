@@ -58,9 +58,9 @@ A SystemVerilog implementation of the microarchitecture of a single **GPU Stream
 
 ### Execution & Writeback
 
-- `int_alu` $\times$8 - Performs arithmetic and logic operations, comparisons, branch conditions, and load/store address generation.
+- `int_alu` $\times8$ - Performs arithmetic and logic operations, comparisons, branch conditions, and load/store address generation.
 
-- `fp32_fma` $\times$8 - Implements a 4-stage pipelined FP32 multiply-add (`src1 * src2 + src3`) on IEEE-754 single-precision values. It is a simplified, not strictly fused, FMA:
+- `fp32_fma` $\times8$ - Implements a 4-stage pipelined FP32 multiply-add (`src1 * src2 + src3`) on IEEE-754 single-precision values. It is a simplified, not strictly fused, FMA:
     - The 48-bit product is truncated to a 24-bit mantissa before alignment and addition, so the result can differ from a true single-rounding FMA in the last bit(s)
     - The final sum is rounded to nearest-even using guard/round/sticky bits
     - Overflow saturates to infinity and underflow flushes to zero; NaN, infinity, and subnormal inputs are not handled
@@ -74,10 +74,10 @@ A SystemVerilog implementation of the microarchitecture of a single **GPU Stream
 
 ### Register File
 
-- `reg_file` $\times$8 banks (one for each lane) with 3 copies of the bank to support 3 synchronous read ports and one write port.
+- `reg_file` $\times8$ banks (one for each lane) with 3 copies of the bank to support 3 synchronous read ports and one write port.
     - Address = `{warp_id[2:0], thread_slot[1:0], reg_num[4:0]}`
 
-- `special_reg_unit` $\times$8 - Generates thread, warp, and block IDs for special-register instructions.
+- `special_reg_unit` $\times8$ - Generates thread, warp, and block IDs for special-register instructions.
 
 ### Memory
 
